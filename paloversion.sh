@@ -1485,7 +1485,7 @@ if (( BATCH_MODE == 1 )); then
 	echo "Beginning autodiscovery..."
 	sleep 1
 	
-	PING6_REPLIES=$(ping6 -c 10 ff02::1%"${NETWORK_INTERFACE}") || { echo "Autodiscovery failed, no devices up. Try reinserting the cable on the MGMT port to regenerate LL. Exiting..."; beepbeep; exit 1; }
+	PING6_REPLIES=$(ping6 -L -c 10 ff02::1%"${NETWORK_INTERFACE}") || { echo "Autodiscovery failed, no devices up. Try reinserting the cable on the MGMT port to regenerate LL. Exiting..."; beepbeep; exit 1; }
 
 	PING6_REPLIES=$(echo -e "$PING6_REPLIES" | grep -E "fe80:[a-fA-F0-9:]+" | sed -r "s/^.*(fe80:[^%]+).*\$/\1/g" | sort | uniq)
 	
