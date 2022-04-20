@@ -105,7 +105,7 @@ Options:
 Easy mode:
 
 	You will be prompted to enter the file names that will be installed in order, separated by a space. Enter a capital \"R\" to indicate a reboot step, e.g:
-	PanOS_800-9.1.9 PanOS_800-10.0.0 R PanOS_800-10.1.0 PanOS_800-10.1.4 R
+	PanOS_800-9.1.9 R PanOS_800-10.0.0 R PanOS_800-10.1.0 PanOS_800-10.1.4 R
 	All filenames must be original as downloaded from the support website.
 
 CSV files must be named after the platform family (e.g. \"800.csv\", this is visible in the output of \"show system info\" on the firewall) and have the following format:
