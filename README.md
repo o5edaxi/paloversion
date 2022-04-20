@@ -18,7 +18,7 @@ This shell script is primarily intended as a quick and easy way to upgrade Palo 
 
 When run in its basic form, the script will ask the user for a firewall IP, a working username and password (with sufficient privileges) for the firewall, the desired version, as well as the top folder where the firmware images are located on the computer. It will then perform the entire upgrade procedure and exit.
 
-**Important:** 2 extra csv files are required, namely one to indicate the details of the software images, and the other to indicate the minimum content version required by each major Pan-OS release. You may construct your own or extract JSON from the support site and run it through the included [Python script](json-extractor.py) to generate it (see **CSV Structure** below for more details).
+**Important:** 2 extra csv files are required, namely one to indicate the details of the software images, and the other to indicate the minimum content version required by each major Pan-OS release. You may construct your own or extract JSON from the support site and run it through the included [Python script](json-extractor.py) to generate it (see **CSV Structure** below for more details). Use **Easy mode** to avoid the need for the csv files.
 
 Use the ```-h``` option to print these instructions to your terminal.
 
@@ -31,25 +31,29 @@ Prints the necessary operations without performing any action on the firewall.
 ```-s	shutdown```
 
 Shuts down the firewall after performing the upgrades.
-	
+
 ```-l	lazy```
-	
+
 Skips installing the "latest" patches during upgrades (ie. skip 9.0.10 when going 9.0.0 -> 9.1.0)
-	
+
+```-e	easy```
+
+Allows the user to list the upgrade steps and files manually, and doesn't check file hashes
+
 ```-x  debug```
-	
+
 Bash debug mode
-	
+
 ```-f  factory-batch mode```
-	
+
 This mode will search for one or more firewalls on the same L2 broadcast domain as the host, and automatically upgrade them by using their IPv6 link-local address.
-	
+
 ```-z  non-interactive mode```
-	
+
 Allows passing all input as arguments to the script (eg. ./paloversion.sh -l -z "192.0.2.1" "admin" "password" "/home/PA/Firmware/" "9.1.6")
-	
+
 ```-m```
-	
+
 Disable checks for valid Palo Alto MAC addresses, attempts to upgrade all devices on the L2 broadcast domain (factory-batch mode only)
 
 ### Requirements
@@ -57,6 +61,16 @@ Disable checks for valid Palo Alto MAC addresses, attempts to upgrade all device
 This script requires **curl**, **xmlstarlet**, and **iproute2** to function. Most modern systems will already have curl and iproute2 on board. Install xmlstarlet with **sudo apt install xmlstarlet**
 
 The script has been tested with PanOS 7.1 all the way to 10.1 on several different platform families including 220, 400, 800, 3000, 3200, 5000, 5200, and vm.
+
+### Easy mode
+
+Using the **-e** flag the script can bypass all the upgrade logic and let the user define the upgrade path, including reboots and content packages. This is useful when you need to upgrade a firewall quickly but don't have time to set the csv files up. The script works out of the box in this mode.
+
+You will be prompted to enter the file names that will be installed in order, separated by a space. Enter a capital \"R\" to indicate a reboot step, e.g:
+
+```PanOS_800-9.1.9 R PanOS_800-10.0.0 R PanOS_800-10.1.0 PanOS_800-10.1.4 R```
+
+All filenames must be original as downloaded from the support website to allow the script to extract the version.
 
 ### CSV Structure
 
