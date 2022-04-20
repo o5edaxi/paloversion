@@ -32,6 +32,11 @@ SEP=","
 
 #####################################################################
 
+# Regex to capture version number in PanOS file names               #
+
+EASY_REGEX='^PanOS[^-]*-(.+)$'
+
+#####################################################################
 
 shopt -s expand_aliases
 
@@ -49,10 +54,11 @@ usage="The following options are supported:
 	-d	Dry run
 	-s	Shutdown after completion
 	-l	Lazy mode
+	-e	Easy mode
 	-x	Enable debug
 	-f	Batch mode
 	-z	Non-interactive mode
-	-m  Disable MAC Filter for batch mode
+	-m	Disable MAC Filter for batch mode
 
 "
 
@@ -76,6 +82,10 @@ Options:
 	
 	Skips installing patches during upgrades (ie. skip 9.0.10 when going 9.0.0 -> 9.1.0)
 	
+	-e	easy
+	
+	Allows the user to list the upgrade steps and files manually, and doesn't check file hashes
+	
 	-x  debug
 	
 	Bash debug mode
@@ -92,6 +102,11 @@ Options:
 	
 	Disable checks for valid Palo Alto MAC addresses, upgrades all firewalls on broadcast domain
 
+Easy mode:
+
+	You will be prompted to enter the file names that will be installed in order, separated by a space. Enter a capital \"R\" to indicate a reboot step, e.g:
+	PanOS_800-9.1.9 PanOS_800-10.0.0 R PanOS_800-10.1.0 PanOS_800-10.1.4 R
+	All filenames must be original as downloaded from the support website.
 
 CSV files must be named after the platform family (e.g. \"800.csv\", this is visible in the output of \"show system info\" on the firewall) and have the following format:
 
@@ -133,7 +148,7 @@ Example:
 
 	"
 
-while getopts 'hdslxfzm' option; do
+while getopts 'hdslexfzm' option; do
   case "$option" in
     h) echo "$help"
        exit
@@ -143,6 +158,8 @@ while getopts 'hdslxfzm' option; do
 	s) SHUTDOWN=1
        ;;
 	l) LAZY=1
+	   ;;
+	e) EASY=1
 	   ;;
 	x) DEBUG=1
 	   ;;
@@ -515,22 +532,26 @@ if (( DRY_RUN == 1 )); then
 		date +"%T Image file $2 already available on the firewall, not uploading..." >&2
 		return 0
 	fi
-	UPLOAD_CHECKSUM=$(fileChecksum "$PLATFORM".csv "$2") || return 1
+	if (( EASY != 1 )); then
+		UPLOAD_CHECKSUM=$(fileChecksum "$PLATFORM".csv "$2") || return 1
+	fi
 	FILE_PATH=$(find "$1" -name "$2")
 	if [[ "$FILE_PATH" == "" ]]; then
 		date +"%T Image file $2 not found. Exiting..." >&2
 		return 1
 	fi
-	CALC_CHECKSUM=$(sha256sum "$FILE_PATH" | cut -d ' ' -f 1)
-	shopt -s nocasematch
-	if ! [[ "$UPLOAD_CHECKSUM" =~ $CALC_CHECKSUM ]]; then
-		date +"%T Image file $FILE_PATH has invalid checksum. Exiting..." >&2
-		echo "Required: $UPLOAD_CHECKSUM" >&2
-		echo "File: $CALC_CHECKSUM" >&2
-		return 1
+	if (( EASY != 1 )); then
+		CALC_CHECKSUM=$(sha256sum "$FILE_PATH" | cut -d ' ' -f 1)
+		shopt -s nocasematch
+		if ! [[ "$UPLOAD_CHECKSUM" =~ $CALC_CHECKSUM ]]; then
+			date +"%T Image file $FILE_PATH has invalid checksum. Exiting..." >&2
+			echo "Required: $UPLOAD_CHECKSUM" >&2
+			echo "File: $CALC_CHECKSUM" >&2
+			return 1
+		fi
+		shopt -u nocasematch
+		date +"%T Checksum matches" >&2
 	fi
-	shopt -u nocasematch
-	date +"%T Checksum matches" >&2
 	date +"%T Would upload $FILE_PATH now" >&2
 	return 0
 fi
@@ -542,7 +563,9 @@ if [[ "$3" != "FORCE" ]]; then
 	fi
 fi
 
-UPLOAD_CHECKSUM=$(fileChecksum "$PLATFORM".csv "$2") || return 1
+if (( EASY != 1 )); then
+	UPLOAD_CHECKSUM=$(fileChecksum "$PLATFORM".csv "$2") || return 1
+fi
 
 FILE_PATH=$(find "$1" -name "$2")
 
@@ -550,15 +573,18 @@ if [[ "$FILE_PATH" == "" ]]; then
 	date +"%T Image file $2 not found. Exiting..." >&2
 	return 1
 fi
-CALC_CHECKSUM=$(sha256sum "$FILE_PATH" | cut -d ' ' -f 1)
-shopt -s nocasematch
-if ! [[ "$UPLOAD_CHECKSUM" =~ $CALC_CHECKSUM ]]; then
-	date +"%T Image file $FILE_PATH has invalid checksum. Exiting..." >&2
-	echo "Required: $UPLOAD_CHECKSUM" >&2
-	echo "File: $CALC_CHECKSUM" >&2
-	return 1
+
+if (( EASY != 1 )); then
+	CALC_CHECKSUM=$(sha256sum "$FILE_PATH" | cut -d ' ' -f 1)
+	shopt -s nocasematch
+	if ! [[ "$UPLOAD_CHECKSUM" =~ $CALC_CHECKSUM ]]; then
+		date +"%T Image file $FILE_PATH has invalid checksum. Exiting..." >&2
+		echo "Required: $UPLOAD_CHECKSUM" >&2
+		echo "File: $CALC_CHECKSUM" >&2
+		return 1
+	fi
+	shopt -u nocasematch
 fi
-shopt -u nocasematch
 
 checkAutoCom "$FIREWALL_ADDRESS" || return 1
 
@@ -875,6 +901,7 @@ if (( DRY_RUN == 1 )); then
 	
 	if checkContentPresent "$CONTENT_FILE"; then
 		date +"%T Content file $CONTENT_FILE is already available on the firewall." >&2
+		date +"%T Would install $CONTENT_FILE now" >&2
 		return 0
 	fi
 	
@@ -981,6 +1008,116 @@ do
 	sleep 5
 	if (( t > 90 )); then
 		date +"%T Firewall ${FIREWALL_ADDRESS} content $CONTENT_FILE installation not complete after 15 minutes. Exiting..." >&2
+		return 1
+	fi
+	JOB_STATUS_CONTENT=$(curler "https://${FIREWALL_ADDRESS}/api/?type=op&cmd=<show><jobs><id>${JOB_ID_CONTENT}</id></jobs></show>" " " 10 " " " " "raw") || return 1
+	JOB_STATUS_CONTENT_RESULT=$(echo "$JOB_STATUS_CONTENT" | xmlstarlet sel -t -v "/response/result/job/result" 2>/dev/null)
+	JOB_STATUS_CONTENT_PROGRESS=$(echo "$JOB_STATUS_CONTENT" | xmlstarlet sel -t -v "/response/result/job/progress" 2>/dev/null)
+	if [[ "$JOB_STATUS_CONTENT_PROGRESS" != "$JOB_STATUS_CONTENT_PROGRESS_1" ]]; then
+		if [[ "$JOB_STATUS_CONTENT_PROGRESS" =~ [0-9]+ ]]; then
+			date +"%T Firewall ${FIREWALL_ADDRESS} content installation is $JOB_STATUS_CONTENT_PROGRESS percent complete." >&2
+			JOB_STATUS_CONTENT_PROGRESS_1="$JOB_STATUS_CONTENT_PROGRESS"
+		elif [[ "$JOB_STATUS_CONTENT_PROGRESS" =~ [0-9\:]+ ]]; then
+			date +"%T Firewall ${FIREWALL_ADDRESS} content installation completed in ${JOB_STATUS_CONTENT_PROGRESS}." >&2
+			JOB_STATUS_CONTENT_PROGRESS_1="$JOB_STATUS_CONTENT_PROGRESS"
+		fi
+	fi
+done
+
+}
+
+##########################################################################################################################################################################################
+# Uploads and installs content for easy mode
+##########################################################################################################################################################################################
+
+upgradeEasyContent(){
+
+if (( DRY_RUN == 1 )); then
+	
+	if checkContentPresent "$1"; then
+		date +"%T Content file $1 is already available on the firewall." >&2
+		date +"%T Would install $1 now" >&2
+		return 0
+	fi
+	
+	FILE_PATH=$(find "$SOFTWARE_FOLDER" -name "$1")
+	if [[ "$FILE_PATH" == "" ]]; then
+		date +"%T Content file $1 not found. Exiting..." >&2
+		return 1
+	fi
+	date +"%T Would upload and install $FILE_PATH now" >&2
+	return 0
+fi
+
+if checkContentPresent "$1"; then
+	date +"%T Content file $1 is already available on the firewall." >&2
+	return 0
+fi
+
+FILE_PATH=$(find "$SOFTWARE_FOLDER" -name "$1")
+
+if [[ "$FILE_PATH" == "" ]]; then
+	date +"%T Image file $1 not found. Exiting..." >&2
+	return 1
+fi
+
+# Proceed with uploading the file
+
+checkAutoCom "$FIREWALL_ADDRESS" || return 1
+
+local RESULT_CUPLOAD_1
+RESULT_CUPLOAD_1=$(curler "https://${FIREWALL_ADDRESS}/api/?type=op&cmd=<show><system><info></info></system></show>" "/response/@status" 10) || return 1
+
+if [[ "$RESULT_CUPLOAD_1" != "success" ]]; then
+	date +"%T Firewall not up while preparing to upload content. Exiting..." >&2
+	return 1
+fi
+
+date +"%T Firewall at ${FIREWALL_ADDRESS} is now up. Uploading content..." >&2
+
+local RESULT_CUPLOAD_2
+RESULT_CUPLOAD_2=$(curler "https://${FIREWALL_ADDRESS}/api/?type=import&category=content" "/response/@status" 300 "-F" "file=@${FILE_PATH}") || return 1
+
+# Proceed with installing the file
+
+if (( DRY_RUN == 1 )); then
+	WOULD_INSTALL_CONTENT="$1"
+	date +"%T Would install $1 now" >&2
+	return 0
+fi
+
+local JOB_ID_CONTENT
+
+# Older versions do not have the "skip-content-validity-check" keyword
+
+JOB_ID_CONTENT=$(curler "https://${FIREWALL_ADDRESS}/api/?type=op&cmd=<request><content><upgrade><install><skip-content-validity-check>yes</skip-content-validity-check><file>$1</file></install></upgrade></content></request>" "/response/result/job" 30) || PRE_81=1
+if (( PRE_81 == 1 )); then
+	date +"%T Retrying pre-8.1 command syntax..." >&2
+	JOB_ID_CONTENT=$(curler "https://${FIREWALL_ADDRESS}/api/?type=op&cmd=<request><content><upgrade><install><file>$1</file></install></upgrade></content></request>" "/response/result/job" 30) || return 1
+fi
+
+date +"%T Installing content $1 on device ${FIREWALL_ADDRESS}. Job ID is ${JOB_ID_CONTENT}." >&2
+
+local t
+t=0
+local JOB_STATUS_CONTENT
+local JOB_STATUS_CONTENT_RESULT
+local JOB_STATUS_CONTENT_MSG
+local JOB_STATUS_CONTENT_PROGRESS
+local JOB_STATUS_CONTENT_PROGRESS_1
+JOB_STATUS_CONTENT=$(curler "https://${FIREWALL_ADDRESS}/api/?type=op&cmd=<show><jobs><id>${JOB_ID_CONTENT}</id></jobs></show>" " " 10 " " " " "raw") || return 1
+JOB_STATUS_CONTENT_RESULT=$(echo "$JOB_STATUS_CONTENT" | xmlstarlet sel -t -v "/response/result/job/result" 2>/dev/null)
+while [[ "$JOB_STATUS_CONTENT_RESULT" != "OK" ]];
+do
+	if [[ "$JOB_STATUS_CONTENT_RESULT" == "FAIL" ]]; then
+		JOB_STATUS_CONTENT_MSG=$(echo "$JOB_STATUS_CONTENT" | xmlstarlet sel -t -v "/response/result/job/details/line" 2>/dev/null)
+		date +"%T Content $1 installation failed with reason: \"${JOB_STATUS_CONTENT_MSG}\". Exiting..." >&2
+		return 1
+	fi
+	((t++))
+	sleep 5
+	if (( t > 90 )); then
+		date +"%T Firewall ${FIREWALL_ADDRESS} content $1 installation not complete after 15 minutes. Exiting..." >&2
 		return 1
 	fi
 	JOB_STATUS_CONTENT=$(curler "https://${FIREWALL_ADDRESS}/api/?type=op&cmd=<show><jobs><id>${JOB_ID_CONTENT}</id></jobs></show>" " " 10 " " " " "raw") || return 1
@@ -1108,6 +1245,8 @@ do
 				date +"%T Current step: ${MAJOR_CUR} -> ${MAJOR_NEXT}, retrying for ${SECONDS}/${ARG3} seconds..." >&2
 			elif [[ "$ACTIVITY" == "Downgrade" ]]; then
 				date +"%T Current step: ${MAJOR_CUR} -> ${MAJOR_PREV}, retrying for ${SECONDS}/${ARG3} seconds..." >&2
+			elif [[ "$ACTIVITY" == "Easy" ]]; then
+				date +"%T Current step: ${MAJOR_CUR} -> ${MAJOR_NEXT}, retrying for ${SECONDS}/${ARG3} seconds..." >&2
 			fi
 			KEEPALIVE=$(( SECONDS + 60 ))
 		fi
@@ -1348,6 +1487,15 @@ if (( DEBUG == 1 )); then
 	set -x
 fi
 
+if (( EASY == 1 )); then
+	if [[ "$LAZY" || "$NON_INTERACTIVE" || "$BATCH_MODE" ]]; then
+		echo "Unsupported option combination with -e. Exiting..."
+		beepbeep
+		echo "---FAILED---"
+		exit 1
+	fi
+fi
+
 if (( NON_INTERACTIVE == 1 )); then
 	FIREWALL_ADDRESS="$1"
 	USERNAME="$2"
@@ -1409,9 +1557,32 @@ else
 		SOFTWARE_FOLDER="./"
 	fi
 	
-	printf "\n\n\nPlease input the desired software release:\n\n\n"
+	if (( EASY != 1 )); then
+		printf "\n\n\nPlease input the desired software release:\n\n\n"
 
-	read -r DESIRED_VERSION
+		read -r DESIRED_VERSION
+	fi
+	
+	if (( EASY == 1 )); then
+		echo "Enter the file names that will be installed in order, separated by a space. Enter a capital \"R\" to indicate a reboot step, e.g:"
+		echo "PanOS_800-9.1.9 PanOS_800-10.0.0 R PanOS_800-10.1.0 PanOS_800-10.1.4 R"
+		echo "All filenames must be original as downloaded from the support website."
+		
+		# To array
+		read -a EASY_PATH
+		
+		for i in "${EASY_PATH[@]}"
+		do
+			if ! [[ "$i" =~ $EASY_REGEX ]] && [[ "$i" != "R" ]]; then
+				echo "Unexpected filename format for entry ${i}, unable to extract version. Custom filenames are not supported in this mode. Exiting..."
+				beepbeep
+				exit 1
+			fi
+		done
+		
+		echo "Enter the filename of the content file to install, otherwise press ENTER:"
+		read -r EASY_CONTENT
+	fi
 fi
 
 TIME_START=$(date "+%s")
@@ -1749,9 +1920,86 @@ checkAutoCom "$FIREWALL_ADDRESS" || endbeep
 
 PLATFORM=$(curler "https://${FIREWALL_ADDRESS}/api/?type=op&cmd=<show><system><info></info></system></show>" "/response/result/system/family" 10) || endbeep
 
-# Get current version and check if it's supported
+# Get current version
 
 CURRENT_VERSION=$(curler "https://${FIREWALL_ADDRESS}/api/?type=op&cmd=<show><system><info></info></system></show>" "/response/result/system/sw-version" 10) || endbeep
+
+###################################################################
+# Easy mode loop
+###################################################################
+
+if (( EASY == 1 )); then
+	# Set for courtesy messages
+	ACTIVITY="Easy"
+	if [[ "$EASY_CONTENT" != "" ]]; then
+		upgradeEasyContent "$EASY_CONTENT" || { date +"%T --- ERROR --- Content upgrade failed. Exiting..."; endbeep; }
+	fi
+	for i in "${EASY_PATH[@]}"
+	do
+		date +"%T Current version: ${CURRENT_VERSION}"
+		# Set for courtesy messages
+		MAJOR_CUR="$CURRENT_VERSION"
+		# Extract version number
+		if [[ "$i" != "R" ]]; then
+			[[ "$i" =~ $EASY_REGEX ]]
+			EASY_NEXT="${BASH_REMATCH[1]}"
+			# Set for courtesy messages
+			MAJOR_NEXT="$EASY_NEXT"
+		fi
+		if (( JUST_REBOOTED == 1 )); then
+			# Wait for bootup
+			CURRENT_VERSION=$(curler "https://${FIREWALL_ADDRESS}/api/?type=op&cmd=<show><system><info></info></system></show>" "/response/result/system/sw-version" 3600) || endbeep
+			MAJOR_CUR="$CURRENT_VERSION"
+			checkAutoCom "$FIREWALL_ADDRESS" || endbeep
+			if [[ "$CURRENT_VERSION" != "" ]]; then
+				JUST_REBOOTED=0
+				beep
+				
+				# Refresh active password
+				curler "https://${FIREWALL_ADDRESS}/api/?type=op&cmd=<show><system><info></info></system></show>" "/response/@status" 10 1>/dev/null || endbeep
+				
+			fi
+		fi
+		
+		if [[ "$i" == "R" ]]; then
+			rebootSystem || endbeep
+		else
+			upload "$SOFTWARE_FOLDER" "$i" || endbeep
+			install "$EASY_NEXT" || { if (( $? == 2 )) && [[ "$VERSION_RETRIED" != "$EASY_NEXT" ]]; then VERSION_RETRIED="$EASY_NEXT"; continue; else date +"%T Installation failed. Exiting..."; endbeep; fi; }
+		fi
+	done
+	
+	if (( JUST_REBOOTED == 1 )); then
+		# Wait for final bootup
+		CURRENT_VERSION=$(curler "https://${FIREWALL_ADDRESS}/api/?type=op&cmd=<show><system><info></info></system></show>" "/response/result/system/sw-version" 3600) || endbeep
+		checkAutoCom "$FIREWALL_ADDRESS" || endbeep
+		if [[ "$CURRENT_VERSION" != "" ]]; then
+			JUST_REBOOTED=0
+			beep
+			
+			# Refresh active password
+			curler "https://${FIREWALL_ADDRESS}/api/?type=op&cmd=<show><system><info></info></system></show>" "/response/@status" 10 1>/dev/null || endbeep
+			
+		fi
+	fi
+	
+	date +"%T Successfully brought ${FIREWALL_ADDRESS} to version ${CURRENT_VERSION}. Exiting..."
+	if (( SHUTDOWN == 1 )); then
+		date +"%T Shutting down firewall ${FIREWALL_ADDRESS}"
+		shutdownSystem || endbeep
+	fi
+	TIME_END=$(date "+%s")
+	TIME_TAKEN=$(( TIME_END - TIME_START ))
+	echo -n "Total time taken: "
+	TZ=UTC0 printf '%(%Hh %Mm %Ss)T\n' "$TIME_TAKEN"
+	beepbeep
+	echo "---FINISHED---"
+	exit 0
+fi
+
+###################################################################
+
+# Check if version is supported
 
 versionPresent "$PLATFORM".csv "$DESIRED_VERSION" || endbeep
 
@@ -1830,6 +2078,7 @@ do
 	MAJOR_CUR=$(majorOf "$PLATFORM".csv "$CURRENT_VERSION") || endbeep
 
 	# Upgrade / Downgrade / Patch
+	# The magic happens here
 
 	case $ACTIVITY in
 
