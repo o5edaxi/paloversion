@@ -8,6 +8,12 @@ BACKUP_PASSWORD="Admin123"
 
 #####################################################################
 
+# The script will stop if more than these reboots happen in a run   #
+
+PATH_MAX=20
+
+#####################################################################
+
 # Sets the maximum number of firewalls in a run                     #
 
 BATCH_MAX=10
@@ -598,95 +604,105 @@ fi
 
 date +"%T Firewall at ${FIREWALL_ADDRESS} is up. Uploading software image $2..." >&2
 
-#local RESULT_UPLOAD_2
-#RESULT_UPLOAD_2=$(curler "https://${FIREWALL_ADDRESS}/api/?type=import&category=software" "/response/@status" 300 "-F" "file=@${FILE_PATH}") || return 1
+if [[ "$CURRENT_VERSION" =~ ^([0-9]|10)\.[0-1]\. ]] || [[ "$CURRENT_VERSION" =~ ^9\.2\. ]]; then
+	# Uploading firmware via API seems to be unreliable under certain conditions in older versions
 
-# Uploading firmware via API seems to be unreliable
-
-local SANITY_CHECK
-SANITY_CHECK=$(curler "https://${FIREWALL_ADDRESS}/api/?type=op&cmd=<show><system><info></info></system></show>" "/response/@status" 10 ) || return 1
-
-# Generate cookies and token, upload file, move file to final directory (this is the way the browser uploads software)
-
-local CURL_CALL_UPLOAD_0
-if [[ "$FIREWALL_ADDRESS" =~ fe80 ]]; then
-	CURL_CALL_UPLOAD_0=$(curl -k -6 --interface "$NETWORK_INTERFACE" -s -D - --max-time 120 --connect-timeout 10 --retry 5 "https://$FIREWALL_ADDRESS/php/login.php?" --data-raw "prot=https:&server=$FIREWALL_ADDRESS&authType=init&challengeCookie=&user=${USERNAME}&passwd=${ACTIVE_PASSWORD}&challengePwd=&ok=Log+In" 2>/dev/null)
+	local SANITY_CHECK
+	SANITY_CHECK=$(curler "https://${FIREWALL_ADDRESS}/api/?type=op&cmd=<show><system><info></info></system></show>" "/response/@status" 10 ) || return 1
+	
+	# Generate cookies and token, upload file, move file to final directory (this is the way the browser uploads software)
+	
+	local CURL_CALL_UPLOAD_0
+	if [[ "$FIREWALL_ADDRESS" =~ fe80 ]]; then
+		CURL_CALL_UPLOAD_0=$(curl -k -6 --interface "$NETWORK_INTERFACE" -s -D - --max-time 120 --connect-timeout 10 --retry 5 "https://$FIREWALL_ADDRESS/php/login.php?" --data-raw "prot=https:&server=$FIREWALL_ADDRESS&authType=init&challengeCookie=&user=${USERNAME}&passwd=${ACTIVE_PASSWORD}&challengePwd=&ok=Log+In" 2>/dev/null)
+	else
+		CURL_CALL_UPLOAD_0=$(curl -k -s -D - --max-time 120 --connect-timeout 10 --retry 5 "https://$FIREWALL_ADDRESS/php/login.php?" --data-raw "prot=https:&server=$FIREWALL_ADDRESS&authType=init&challengeCookie=&user=${USERNAME}&passwd=${ACTIVE_PASSWORD}&challengePwd=&ok=Log+In" 2>/dev/null)
+	fi
+	
+	if [[ "$CURL_CALL_UPLOAD_0" == "" ]]; then
+		date +"%T In function upload(), firewall not responding after 5 retries. Exiting..." >&2
+		return 1
+	fi
+	
+	if ! [[ "$CURL_CALL_UPLOAD_0" =~ ^.*PHPSESSID\=([^\;\"]*)[\;\"].* ]]; then
+		date +"%T In function upload(), missing PHPSESSID cookie in HTTP response. Exiting..." >&2
+		return 1
+	fi
+	
+	local COOKIE_PHP
+	COOKIE_PHP=$(echo "$CURL_CALL_UPLOAD_0" | grep PHPSESSID | sed -r 's/.*PHPSESSID\=([^;"]*)[;"].*/\1/')
+	
+	local CURL_CALL_UPLOAD_1
+	if [[ "$FIREWALL_ADDRESS" =~ fe80 ]]; then
+		CURL_CALL_UPLOAD_1=$(curl -k -6 --interface "$NETWORK_INTERFACE" -s -D - --max-time 120 --connect-timeout 10 --retry 5 -X GET -H "Cookie: PHPSESSID=$COOKIE_PHP" "https://$FIREWALL_ADDRESS/" )
+	else
+		CURL_CALL_UPLOAD_1=$(curl -k -s -D - --max-time 120 --connect-timeout 10 --retry 5 -X GET -H "Cookie: PHPSESSID=$COOKIE_PHP" "https://$FIREWALL_ADDRESS/" )
+	fi
+	
+	if ! [[ "$CURL_CALL_UPLOAD_1" =~ ^.*window\.Pan\.st\.st\.st[0-9]+\ \=\ \"[^\"]+\".* ]]; then
+		date +"%T In function upload(), missing Pan.st cookie in HTTP response. Exiting..." >&2
+		return 1
+	fi
+	
+	# Cross-site request forgery protection tokens
+	
+	local COOKIE_RPC
+	COOKIE_RPC=$(echo "$CURL_CALL_UPLOAD_1" | grep window\.Pan\.st\.st\.st | sed -r 's/^.*window\.Pan\.st\.st\.st[0-9]+\ \=\ \"([^\"]+)\".*/\1/')
+	
+	local TID
+	TID="1"
+	
+	local TOKEN_RPC
+	TOKEN_RPC=$(echo -n "$COOKIE_RPC$TID" | md5sum | awk "{ print \$1 }")
+	
+	local CURL_CALL_UPLOAD_2
+	if [[ "$FIREWALL_ADDRESS" =~ fe80 ]]; then
+		CURL_CALL_UPLOAD_2=$(curl -k -6 --interface "$NETWORK_INTERFACE" --retry 5 --max-time 1800 --connect-timeout 10 -F ___tid="$TID" -F ___token="${TOKEN_RPC}" -F file_path=@"${FILE_PATH}" "https://$FIREWALL_ADDRESS/upload/upload_software.php" -H "Cookie: PHPSESSID=$COOKIE_PHP") || { date +"%T Software upload not done after 30 minutes. Exiting..." >&2; return 1; }
+	else
+		CURL_CALL_UPLOAD_2=$(curl -k --retry 5 --max-time 1800 --connect-timeout 10 -F ___tid="$TID" -F ___token="${TOKEN_RPC}" -F file_path=@"${FILE_PATH}" "https://$FIREWALL_ADDRESS/upload/upload_software.php" -H "Cookie: PHPSESSID=$COOKIE_PHP") || { date +"%T Software upload not done after 30 minutes. Exiting..." >&2; return 1; }
+	fi
+	
+	if ! ( [[ "$CURL_CALL_UPLOAD_2" =~ success[\"\ ]*\:[\"\ ]*true ]] || [[ "$CURL_CALL_UPLOAD_2" =~ status[\"\ ]*\:[\"\ ]*success ]] ); then
+		date +"%T Software upload result not successful. Exiting..." >&2
+		return 1
+	fi
+	
+	local FILE_RPC
+	FILE_RPC=$(echo "$CURL_CALL_UPLOAD_2" | grep file | sed -r 's/^.*file[" ]*\:[" ]*([^",}]+)[",}].*/\1/')
+	
+	local FILEPATH_RPC
+	FILEPATH_RPC=$(echo "$CURL_CALL_UPLOAD_2" | grep filepath | sed -r 's/^.*filepath[" ]*\:[" ]*([^",}]+)[",}].*/\1/' )
+	
+	TID="1"
+	TOKEN_RPC=$(echo -n "$COOKIE_RPC$TID" | md5sum | awk "{ print \$1 }")
+	
+	local CURL_CALL_UPLOAD_3
+	if [[ "$FIREWALL_ADDRESS" =~ fe80 ]]; then
+		CURL_CALL_UPLOAD_3=$(curl -k -6 --interface "$NETWORK_INTERFACE" -s --retry 5 --max-time 240 --connect-timeout 10 "https://$FIREWALL_ADDRESS/php/utils/router.php/SoftwareAndContentUtils.importPackage" -H "Cookie: PHPSESSID=$COOKIE_PHP" -H "Content-Type: application/json" --data-raw "{\"action\":\"PanDirect\",\"method\":\"execute\",\"data\":[\"${TOKEN_RPC}\",\"SoftwareAndContentUtils.importPackage\",{\"deploy\":false,\"localFilePath\":\"${FILEPATH_RPC}\",\"clientFileName\":\"${FILE_RPC}\",\"packageType\":\"software\",\"syncToPeer\":\"no\"}],\"type\":\"rpc\",\"tid\":\"$TID\"}" 2>/dev/null)
+	else
+		CURL_CALL_UPLOAD_3=$(curl -k -s --retry 5 --max-time 240 --connect-timeout 10 "https://$FIREWALL_ADDRESS/php/utils/router.php/SoftwareAndContentUtils.importPackage" -H "Cookie: PHPSESSID=$COOKIE_PHP" -H "Content-Type: application/json" --data-raw "{\"action\":\"PanDirect\",\"method\":\"execute\",\"data\":[\"${TOKEN_RPC}\",\"SoftwareAndContentUtils.importPackage\",{\"deploy\":false,\"localFilePath\":\"${FILEPATH_RPC}\",\"clientFileName\":\"${FILE_RPC}\",\"packageType\":\"software\",\"syncToPeer\":\"no\"}],\"type\":\"rpc\",\"tid\":\"$TID\"}" 2>/dev/null)
+	fi
+	
+	if [[ "$CURL_CALL_UPLOAD_3" == "" ]]; then
+		date +"%T Software upload result not successful. Exiting..." >&2
+		return 1
+	fi
+	
+	if ! ( [[ "$CURL_CALL_UPLOAD_3" =~ success[\"\ ]*\:[\"\ ]*true ]] || [[ "$CURL_CALL_UPLOAD_3" =~ status[\"\ ]*\:[\"\ ]*success ]] ); then
+		date +"%T Software upload result not successful. Exiting..." >&2
+		return 1
+	fi
 else
-	CURL_CALL_UPLOAD_0=$(curl -k -s -D - --max-time 120 --connect-timeout 10 --retry 5 "https://$FIREWALL_ADDRESS/php/login.php?" --data-raw "prot=https:&server=$FIREWALL_ADDRESS&authType=init&challengeCookie=&user=${USERNAME}&passwd=${ACTIVE_PASSWORD}&challengePwd=&ok=Log+In" 2>/dev/null)
-fi
-
-if [[ "$CURL_CALL_UPLOAD_0" == "" ]]; then
-	date +"%T In function upload(), firewall not responding after 5 retries. Exiting..." >&2
-	return 1
-fi
-
-if ! [[ "$CURL_CALL_UPLOAD_0" =~ ^.*PHPSESSID\=([^\;\"]*)[\;\"].* ]]; then
-	date +"%T In function upload(), missing PHPSESSID cookie in HTTP response. Exiting..." >&2
-	return 1
-fi
-
-local COOKIE_PHP
-COOKIE_PHP=$(echo "$CURL_CALL_UPLOAD_0" | grep PHPSESSID | sed -r 's/.*PHPSESSID\=([^;"]*)[;"].*/\1/')
-
-local CURL_CALL_UPLOAD_1
-if [[ "$FIREWALL_ADDRESS" =~ fe80 ]]; then
-	CURL_CALL_UPLOAD_1=$(curl -k -6 --interface "$NETWORK_INTERFACE" -s -D - --max-time 120 --connect-timeout 10 --retry 5 -X GET -H "Cookie: PHPSESSID=$COOKIE_PHP" "https://$FIREWALL_ADDRESS/" )
-else
-	CURL_CALL_UPLOAD_1=$(curl -k -s -D - --max-time 120 --connect-timeout 10 --retry 5 -X GET -H "Cookie: PHPSESSID=$COOKIE_PHP" "https://$FIREWALL_ADDRESS/" )
-fi
-
-if ! [[ "$CURL_CALL_UPLOAD_1" =~ ^.*window\.Pan\.st\.st\.st[0-9]+\ \=\ \"[^\"]+\".* ]]; then
-	date +"%T In function upload(), missing Pan.st cookie in HTTP response. Exiting..." >&2
-	return 1
-fi
-
-# Cross-site request forgery protection tokens
-
-local COOKIE_RPC
-COOKIE_RPC=$(echo "$CURL_CALL_UPLOAD_1" | grep window\.Pan\.st\.st\.st | sed -r 's/^.*window\.Pan\.st\.st\.st[0-9]+\ \=\ \"([^\"]+)\".*/\1/')
-
-local TID
-TID="1"
-
-local TOKEN_RPC
-TOKEN_RPC=$(echo -n "$COOKIE_RPC$TID" | md5sum | awk "{ print \$1 }")
-
-local CURL_CALL_UPLOAD_2
-if [[ "$FIREWALL_ADDRESS" =~ fe80 ]]; then
-	CURL_CALL_UPLOAD_2=$(curl -k -6 --interface "$NETWORK_INTERFACE" --retry 5 --max-time 1800 --connect-timeout 10 -F ___tid="$TID" -F ___token="${TOKEN_RPC}" -F file_path=@"${FILE_PATH}" "https://$FIREWALL_ADDRESS/upload/upload_software.php" -H "Cookie: PHPSESSID=$COOKIE_PHP") || { date +"%T Software upload not done after 30 minutes. Exiting..." >&2; return 1; }
-else
-	CURL_CALL_UPLOAD_2=$(curl -k --retry 5 --max-time 1800 --connect-timeout 10 -F ___tid="$TID" -F ___token="${TOKEN_RPC}" -F file_path=@"${FILE_PATH}" "https://$FIREWALL_ADDRESS/upload/upload_software.php" -H "Cookie: PHPSESSID=$COOKIE_PHP") || { date +"%T Software upload not done after 30 minutes. Exiting..." >&2; return 1; }
-fi
-
-if ! ( [[ "$CURL_CALL_UPLOAD_2" =~ success[\"\ ]*\:[\"\ ]*true ]] || [[ "$CURL_CALL_UPLOAD_2" =~ status[\"\ ]*\:[\"\ ]*success ]] ); then
-	date +"%T Software upload result not successful. Exiting..." >&2
-	return 1
-fi
-
-local FILE_RPC
-FILE_RPC=$(echo "$CURL_CALL_UPLOAD_2" | grep file | sed -r 's/^.*file[" ]*\:[" ]*([^",}]+)[",}].*/\1/')
-
-local FILEPATH_RPC
-FILEPATH_RPC=$(echo "$CURL_CALL_UPLOAD_2" | grep filepath | sed -r 's/^.*filepath[" ]*\:[" ]*([^",}]+)[",}].*/\1/')
-
-TID="1"
-TOKEN_RPC=$(echo -n "$COOKIE_RPC$TID" | md5sum | awk "{ print \$1 }")
-
-local CURL_CALL_UPLOAD_3
-if [[ "$FIREWALL_ADDRESS" =~ fe80 ]]; then
-	CURL_CALL_UPLOAD_3=$(curl -k -6 --interface "$NETWORK_INTERFACE" -s --retry 5 --max-time 240 --connect-timeout 10 "https://$FIREWALL_ADDRESS/php/utils/router.php/SoftwareAndContentUtils.importPackage" -H "Cookie: PHPSESSID=$COOKIE_PHP" -H "Content-Type: application/json" --data-raw "{\"action\":\"PanDirect\",\"method\":\"execute\",\"data\":[\"${TOKEN_RPC}\",\"SoftwareAndContentUtils.importPackage\",{\"deploy\":false,\"localFilePath\":\"${FILEPATH_RPC}\",\"clientFileName\":\"${FILE_RPC}\",\"packageType\":\"software\",\"syncToPeer\":\"no\"}],\"type\":\"rpc\",\"tid\":\"$TID\"}" 2>/dev/null)
-else
-	CURL_CALL_UPLOAD_3=$(curl -k -s --retry 5 --max-time 240 --connect-timeout 10 "https://$FIREWALL_ADDRESS/php/utils/router.php/SoftwareAndContentUtils.importPackage" -H "Cookie: PHPSESSID=$COOKIE_PHP" -H "Content-Type: application/json" --data-raw "{\"action\":\"PanDirect\",\"method\":\"execute\",\"data\":[\"${TOKEN_RPC}\",\"SoftwareAndContentUtils.importPackage\",{\"deploy\":false,\"localFilePath\":\"${FILEPATH_RPC}\",\"clientFileName\":\"${FILE_RPC}\",\"packageType\":\"software\",\"syncToPeer\":\"no\"}],\"type\":\"rpc\",\"tid\":\"$TID\"}" 2>/dev/null)
-fi
-
-if [[ "$CURL_CALL_UPLOAD_3" == "" ]]; then
-	date +"%T Software upload result not successful. Exiting..." >&2
-	return 1
-fi
-
-if ! ( [[ "$CURL_CALL_UPLOAD_3" =~ success[\"\ ]*\:[\"\ ]*true ]] || [[ "$CURL_CALL_UPLOAD_3" =~ status[\"\ ]*\:[\"\ ]*success ]] ); then
-	date +"%T Software upload result not successful. Exiting..." >&2
-	return 1
+	# Hopefully this works fine post 10.1
+	local RESULT_API_UPLOAD
+	SILENT_CURL=""
+	RESULT_API_UPLOAD=$(curler "https://${FIREWALL_ADDRESS}/api/?type=import&category=software" "/response/@status" 300 "-F" "file=@${FILE_PATH}") || { SILENT_CURL="-s"; return 1; }
+	SILENT_CURL="-s"
+	
+	if [[ "$RESULT_API_UPLOAD" != "success" ]]; then
+		date +"%T Software upload of file $FILE_PATH failed. Exiting..." >&2
+		return 1
+	fi
 fi
 
 # Software is sometimes not showing even after a successful upload
@@ -758,7 +774,7 @@ do
 			date +"%T Firewall ${FIREWALL_ADDRESS} software installation is $JOB_STATUS_PROGRESS percent complete." >&2
 			JOB_STATUS_PROGRESS_1="$JOB_STATUS_PROGRESS"
 		elif [[ "$JOB_STATUS_PROGRESS" =~ ^[0-9\:]+$ ]]; then
-			date +"%T Firewall ${FIREWALL_ADDRESS} software installation completed in ${JOB_STATUS_PROGRESS}." >&2
+			date +"%T Firewall ${FIREWALL_ADDRESS} software installation completed." >&2
 			JOB_STATUS_PROGRESS_1="$JOB_STATUS_PROGRESS"
 		fi
 	fi
@@ -963,7 +979,9 @@ fi
 date +"%T Firewall at ${FIREWALL_ADDRESS} is now up. Uploading content..." >&2
 
 local RESULT_CUPLOAD_2
-RESULT_CUPLOAD_2=$(curler "https://${FIREWALL_ADDRESS}/api/?type=import&category=content" "/response/@status" 300 "-F" "file=@${FILE_PATH}") || return 1
+SILENT_CURL=""
+RESULT_CUPLOAD_2=$(curler "https://${FIREWALL_ADDRESS}/api/?type=import&category=content" "/response/@status" 300 "-F" "file=@${FILE_PATH}") || { SILENT_CURL="-s"; return 1; }
+SILENT_CURL="-s"
 
 # "request content upgrade info" doesn't properly show uploaded packages
 #checkContentPresent "$CONTENT_FILE" || { date +"%T Content upload failed. Exiting..." >&2; return 1; }
@@ -1014,11 +1032,11 @@ do
 	JOB_STATUS_CONTENT_RESULT=$(echo "$JOB_STATUS_CONTENT" | xmlstarlet sel -t -v "/response/result/job/result" 2>/dev/null)
 	JOB_STATUS_CONTENT_PROGRESS=$(echo "$JOB_STATUS_CONTENT" | xmlstarlet sel -t -v "/response/result/job/progress" 2>/dev/null)
 	if [[ "$JOB_STATUS_CONTENT_PROGRESS" != "$JOB_STATUS_CONTENT_PROGRESS_1" ]]; then
-		if [[ "$JOB_STATUS_CONTENT_PROGRESS" =~ [0-9]+ ]]; then
+		if [[ "$JOB_STATUS_CONTENT_PROGRESS" =~ ^[0-9]+$ ]]; then
 			date +"%T Firewall ${FIREWALL_ADDRESS} content installation is $JOB_STATUS_CONTENT_PROGRESS percent complete." >&2
 			JOB_STATUS_CONTENT_PROGRESS_1="$JOB_STATUS_CONTENT_PROGRESS"
-		elif [[ "$JOB_STATUS_CONTENT_PROGRESS" =~ [0-9\:]+ ]]; then
-			date +"%T Firewall ${FIREWALL_ADDRESS} content installation completed in ${JOB_STATUS_CONTENT_PROGRESS}." >&2
+		elif [[ "$JOB_STATUS_CONTENT_PROGRESS" =~ ^[0-9\:]+$ ]]; then
+			date +"%T Firewall ${FIREWALL_ADDRESS} content installation completed." >&2
 			JOB_STATUS_CONTENT_PROGRESS_1="$JOB_STATUS_CONTENT_PROGRESS"
 		fi
 	fi
@@ -1076,7 +1094,9 @@ fi
 date +"%T Firewall at ${FIREWALL_ADDRESS} is now up. Uploading content..." >&2
 
 local RESULT_CUPLOAD_2
-RESULT_CUPLOAD_2=$(curler "https://${FIREWALL_ADDRESS}/api/?type=import&category=content" "/response/@status" 300 "-F" "file=@${FILE_PATH}") || return 1
+SILENT_CURL=""
+RESULT_CUPLOAD_2=$(curler "https://${FIREWALL_ADDRESS}/api/?type=import&category=content" "/response/@status" 300 "-F" "file=@${FILE_PATH}") || { SILENT_CURL="-s"; return 1; }
+SILENT_CURL="-s"
 
 # Proceed with installing the file
 
@@ -1124,11 +1144,11 @@ do
 	JOB_STATUS_CONTENT_RESULT=$(echo "$JOB_STATUS_CONTENT" | xmlstarlet sel -t -v "/response/result/job/result" 2>/dev/null)
 	JOB_STATUS_CONTENT_PROGRESS=$(echo "$JOB_STATUS_CONTENT" | xmlstarlet sel -t -v "/response/result/job/progress" 2>/dev/null)
 	if [[ "$JOB_STATUS_CONTENT_PROGRESS" != "$JOB_STATUS_CONTENT_PROGRESS_1" ]]; then
-		if [[ "$JOB_STATUS_CONTENT_PROGRESS" =~ [0-9]+ ]]; then
+		if [[ "$JOB_STATUS_CONTENT_PROGRESS" =~ ^[0-9]+$ ]]; then
 			date +"%T Firewall ${FIREWALL_ADDRESS} content installation is $JOB_STATUS_CONTENT_PROGRESS percent complete." >&2
 			JOB_STATUS_CONTENT_PROGRESS_1="$JOB_STATUS_CONTENT_PROGRESS"
-		elif [[ "$JOB_STATUS_CONTENT_PROGRESS" =~ [0-9\:]+ ]]; then
-			date +"%T Firewall ${FIREWALL_ADDRESS} content installation completed in ${JOB_STATUS_CONTENT_PROGRESS}." >&2
+		elif [[ "$JOB_STATUS_CONTENT_PROGRESS" =~ ^[0-9\:]+$ ]]; then
+			date +"%T Firewall ${FIREWALL_ADDRESS} content installation completed." >&2
 			JOB_STATUS_CONTENT_PROGRESS_1="$JOB_STATUS_CONTENT_PROGRESS"
 		fi
 	fi
@@ -1217,9 +1237,9 @@ do
 	do
 		
 		if [[ "$1" =~ fe80 ]]; then
-			CURL=$(curl -k -s -6 --interface "$NETWORK_INTERFACE" -u "${USERNAME}":"${ACTIVE_PASSWORD}" --max-time 1800 --connect-timeout 3 "$4" "$5" "$1")
+			CURL=$(curl -k $SILENT_CURL -6 --interface "$NETWORK_INTERFACE" -u "${USERNAME}":"${ACTIVE_PASSWORD}" --max-time 1800 --connect-timeout 3 "$4" "$5" "$1")
 		else
-			CURL=$(curl -k -s -u "${USERNAME}":"${ACTIVE_PASSWORD}" --max-time 1800 --connect-timeout 3 "$4" "$5" "$1")
+			CURL=$(curl -k $SILENT_CURL -u "${USERNAME}":"${ACTIVE_PASSWORD}" --max-time 1800 --connect-timeout 3 "$4" "$5" "$1")
 		fi
 		
 		# Response must be a valid API response. If rebooting, we sometimes receive random API errors or plain HTML.
@@ -1374,28 +1394,46 @@ done
 checkAutoCom(){
 
 local AUTOCOM_STATUS
+local RAW_RESPONSE
+local FAILURE_REASON
 SECONDS=0
 local KEEPALIVE
 KEEPALIVE=$(( SECONDS + 60 ))
 while (( SECONDS < 1800 ))
 do
-	AUTOCOM_STATUS=$(curler "https://${1}/api/?type=op&cmd=<show><jobs><all></all></jobs></show>" " " 10 " " " " "raw") || return 1
+	RAW_RESPONSE=$(curler "https://${1}/api/?type=op&cmd=<show><jobs><all></all></jobs></show>" " " 10 " " " " "raw") || return 1
 	
-	JOB_AMOUNT=$(echo "$AUTOCOM_STATUS" | xmlstarlet sel -t -c "count(/response/result/job)" 2>/dev/null)
+	JOB_AMOUNT=$(echo "$RAW_RESPONSE" | xmlstarlet sel -t -c "count(/response/result/job)" 2>/dev/null)
 	
-	AUTOCOM_STATUS=$(echo "$AUTOCOM_STATUS" | xmlstarlet sel -t -m "/response/result/job[type='AutoCom']" -v result 2>/dev/null)
+	AUTOCOM_STATUS=$(echo "$RAW_RESPONSE" | xmlstarlet sel -t -m "/response/result/job[type='AutoCom']" -v result 2>/dev/null)
 	if [[ "$AUTOCOM_STATUS" == "OK" ]]; then
 		JUST_REBOOTED=0
 		return 0
-		
 		# This show command goes up to 29 jobs and then hides older jobs, including the autocommit. We assume it completed.
-		
 	elif [[ "$AUTOCOM_STATUS" == "" ]] && (( JOB_AMOUNT > 28 )); then
 		JUST_REBOOTED=0
 		return 0
-		
+	elif [[ "$AUTOCOM_STATUS" =~ "FAIL" ]] && (( NON_INTERACTIVE == 1 )); then
+		# The autocommit failed for whatever reason (could be OKOKFAILOKOK so use regex)
+		FAILURE_REASON=$(echo "$RESPONSE" | xmlstarlet sel -t -m "/response/result/job[type='AutoCom']" -v details 2>/dev/null)
+		echo "Autocommit is failing after reboot. Exiting due to running in non-interactive mode. Failure reason:" >&2
+		echo "$FAILURE_REASON" >&2
+		return 1
+	elif [[ "$AUTOCOM_STATUS" =~ "FAIL" ]]; then
+		FAILURE_REASON=$(echo "$RAW_RESPONSE" | xmlstarlet sel -t -m "/response/result/job[type='AutoCom']" -v details 2>/dev/null)
+		echo "The autocommit is failing after reboot. Failure reason:" >&2
+		beepbeep
+		echo "$FAILURE_REASON" >&2
+		echo "Continue the activity anyway?" >&2
+		while true; do
+			read yn
+			case $yn in
+				[Yy]* ) echo "Attempting to continue the activity..." >&2; JUST_REBOOTED=0; return 0;;
+				[Nn]* ) echo "Stopping the activity." >&2; return 1;;
+				* ) echo "Please answer yes or no.";;
+			esac
+		done
 	else
-		
 		date +"%T Autocommit not finished. Checking again in 10 seconds..." >&2
 		sleep 4
 		if (( SECONDS >= KEEPALIVE )); then
@@ -1468,6 +1506,10 @@ fi
 
 JUST_STARTED=1
 JUST_REBOOTED=0
+PATH_DIAMETER=0
+
+# Set to "" to output curl stats in curler()
+SILENT_CURL="-s"
 
 if ! command -v xmlstarlet &> /dev/null; then
     echo "This script requires xmlstarlet to be installed. Try with \"sudo apt install xmlstarlet\". Exiting..."
@@ -1936,7 +1978,11 @@ if (( EASY == 1 )); then
 	fi
 	for i in "${EASY_PATH[@]}"
 	do
-		date +"%T Current version: ${CURRENT_VERSION}"
+		if (( DRY_RUN == 1 )); then
+			date +"%T WARNING: Dry run does not guarantee the upgrade path is correct in Easy Mode"
+		else
+			date +"%T Current version: ${CURRENT_VERSION}"
+		fi
 		# Set for courtesy messages
 		MAJOR_CUR="$CURRENT_VERSION"
 		# Extract version number
@@ -2036,6 +2082,13 @@ fi
 
 while true
 do
+	# Count the reboots
+	
+	(( PATH_DIAMETER++ ))
+	if (( PATH_DIAMETER > PATH_MAX )); then
+		date +"%T Firewall reboots exceeded ${PATH_MAX}. Exiting to prevent loops..."
+		endbeep
+	fi
 
 	# Re-check current version
 
@@ -2076,7 +2129,18 @@ do
 	fi
 
 	MAJOR_CUR=$(majorOf "$PLATFORM".csv "$CURRENT_VERSION") || endbeep
-
+	
+	# Re-check activity type in case there were extra reboots (install() returned 2) as it now could be a patching activity
+	
+	ACTIVITY=$(majorCompare "$PLATFORM".csv "$CURRENT_VERSION" "$DESIRED_VERSION") || endbeep
+	
+	if [[ "$ACTIVITY" == "Error" ]]; then
+		date +"%T Major version error. Exiting..."
+		beepbeep
+		echo "---FAILED---"
+		exit 1
+	fi
+	
 	# Upgrade / Downgrade / Patch
 	# The magic happens here
 
@@ -2225,7 +2289,40 @@ do
 
 			FILE_NAME=$(fileName "$PLATFORM".csv "$FEATURE_PREV") || endbeep
 			upload "$SOFTWARE_FOLDER" "$FILE_NAME" || endbeep
-			install "$FEATURE_PREV" || { if (( $? == 2 )) && [[ "$VERSION_RETRIED" != "$FEATURE_PREV" ]]; then VERSION_RETRIED="$FEATURE_PREV"; continue; else date +"%T Installation failed. Exiting..."; endbeep; fi; }
+			
+			# Extra logic to deal with PAN-OS 10.2 downgrades
+			# Must install 10.1.3 or superior first
+			
+			if [[ "$FEATURE_PREV" == "10.1.0" ]]; then
+				# Install base image ignoring errors, so we know it's uploaded
+				date +"%T Attempting 10.1.0 install to force image into software manager (see documentation regarding 10.2->10.1 downgrades)"
+				install "$FEATURE_PREV"
+				DOWNGR_1013_REGEX='^10\.1\.[0-2]$'
+				if [[ "$DESIRED_VERSION" =~ ^10\.1\. ]] && ! [[ "$DESIRED_VERSION" =~ $DOWNGR_1013_REGEX ]]; then
+					# Ultimate version is 10.1.3 or older so we can advance normally
+					# Do nothing
+					:
+				else
+					date +"%T Patching to 10.1.3 or later before downgrading (see documentation regarding 10.2->10.1 downgrades)"
+					FEATURE_PREV=$(LatestPatchOf "$PLATFORM".csv "10.1") || endbeep
+					if [[ "$FEATURE_PREV" =~ $DOWNGR_1013_REGEX ]]; then
+						# We need at least 10.1.3 or later
+						date +"%T Pan-OS 10.1.3 or later 10.1 patch not found (see documentation regarding 10.2->10.1 downgrades). Exiting..."
+						beepbeep
+						echo "---FAILED---"
+						exit 1
+					fi
+					FILE_NAME=$(fileName "$PLATFORM".csv "$FEATURE_PREV") || endbeep
+					upload "$SOFTWARE_FOLDER" "$FILE_NAME" || endbeep
+					install "$FEATURE_PREV" || { if (( $? == 2 )) && [[ "$VERSION_RETRIED" != "$FEATURE_PREV" ]]; then VERSION_RETRIED="$FEATURE_PREV"; continue; else date +"%T Installation failed. Exiting..."; endbeep; fi; }
+					rebootSystem || endbeep
+					# The next cycle will use downgrade or patching logic as required
+					continue
+				fi
+			else
+				# Install base version as normal
+				install "$FEATURE_PREV" || { if (( $? == 2 )) && [[ "$VERSION_RETRIED" != "$FEATURE_PREV" ]]; then VERSION_RETRIED="$FEATURE_PREV"; continue; else date +"%T Installation failed. Exiting..."; endbeep; fi; }
+			fi
 			
 			# If no patches are required, we are done
 			
@@ -2248,7 +2345,35 @@ do
 		if [[ "$MAJOR_PREV" != "$MAJOR_REQ" ]]; then
 			FILE_NAME=$(fileName "$PLATFORM".csv "$FEATURE_PREV") || endbeep
 			upload "$SOFTWARE_FOLDER" "$FILE_NAME" || endbeep
-			install "$FEATURE_PREV" || { if (( $? == 2 )) && [[ "$VERSION_RETRIED" != "$FEATURE_PREV" ]]; then VERSION_RETRIED="$FEATURE_PREV"; continue; else date +"%T Installation failed. Exiting..."; endbeep; fi; }
+
+			# Extra logic to deal with PAN-OS 10.2 downgrades
+			# Must install 10.1.3 or superior first
+			
+			if [[ "$FEATURE_PREV" == "10.1.0" ]]; then
+				# Install base image ignoring errors, so we know it's uploaded
+				date +"%T Attempting 10.1.0 install to force image into software manager (see documentation regarding 10.2->10.1 downgrades)"
+				install "$FEATURE_PREV"
+				DOWNGR_1013_REGEX='^10\.1\.[0-2]$'
+				date +"%T Patching to 10.1.3 or later before downgrading (see documentation regarding 10.2->10.1 downgrades)"
+				FEATURE_PREV=$(LatestPatchOf "$PLATFORM".csv "10.1") || endbeep
+				if [[ "$FEATURE_PREV" =~ $DOWNGR_1013_REGEX ]]; then
+					# We need at least 10.1.3 or later
+					date +"%T Pan-OS 10.1.3 or later 10.1 patch not found (see documentation regarding 10.2->10.1 downgrades). Exiting..."
+					beepbeep
+					echo "---FAILED---"
+					exit 1
+				fi
+				FILE_NAME=$(fileName "$PLATFORM".csv "$FEATURE_PREV") || endbeep
+				upload "$SOFTWARE_FOLDER" "$FILE_NAME" || endbeep
+				install "$FEATURE_PREV" || { if (( $? == 2 )) && [[ "$VERSION_RETRIED" != "$FEATURE_PREV" ]]; then VERSION_RETRIED="$FEATURE_PREV"; continue; else date +"%T Installation failed. Exiting..."; endbeep; fi; }
+				rebootSystem || endbeep
+				# The next cycle will use downgrade or patching logic as required
+				continue
+			else
+				# Install base version as normal
+				install "$FEATURE_PREV" || { if (( $? == 2 )) && [[ "$VERSION_RETRIED" != "$FEATURE_PREV" ]]; then VERSION_RETRIED="$FEATURE_PREV"; continue; else date +"%T Installation failed. Exiting..."; endbeep; fi; }
+			fi
+			
 			rebootSystem || endbeep
 			continue
 		fi
