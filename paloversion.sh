@@ -1162,28 +1162,61 @@ done
 
 passwordChange(){
 
+# GET
+
+local CURL_CALL_PWDCHANGE_0
+if [[ "$FIREWALL_ADDRESS" =~ fe80 ]]; then
+	CURL_CALL_PWDCHANGE_0=$(curl -k -6 --interface "$NETWORK_INTERFACE" -s -D - --max-time 1800 --connect-timeout 3 --retry 5 "https://${FIREWALL_ADDRESS}/php/login.php?")
+else
+	CURL_CALL_PWDCHANGE_0=$(curl -k -s -D - --max-time 1800 --connect-timeout 3 --retry 5 "https://${FIREWALL_ADDRESS}/php/login.php?")
+fi
+
+if [[ "$CURL_CALL_PWDCHANGE_0" == "" ]]; then
+	date +"%T In function passwordChange(), firewall not responding after 5 retries. Exiting..." >&2
+	return 1
+fi
+
+if ! [[ "$CURL_CALL_PWDCHANGE_0" =~ ^.*PHPSESSID\=([^\;\"]*)[\;\"].* ]]; then
+	date +"%T In function passwordChange(), missing PHPSESSID cookie in HTTP response. Exiting..." >&2
+	return 1
+elif ! [[ "$CURL_CALL_PWDCHANGE_0" =~ ^.*window\.Pan\.st\.st\.st[0-9]+\ \=\ \"[^\"]+\".* ]]; then
+	date +"%T In function passwordChange(), missing csrf in HTTP response. Exiting..." >&2
+	return 1
+fi
+
+# csrf tokens
+
+local CSRF
+CSRF=$(echo "$CURL_CALL_PWDCHANGE_0" | grep window\.Pan\.st\.st\.st | sed -r 's/^.*window\.Pan\.st\.st\.st[0-9]+\ \=\ \"([^\"]+)\".*/\1/')
+
+local COOKIE
+COOKIE=$(echo "$CURL_CALL_PWDCHANGE_0" | grep PHPSESSID | sed -r 's/.*PHPSESSID\=([^;"]*)[;"].*/\1/')
+
+# POST LOGIN
+
 local CURL_CALL_PWDCHANGE_1
 if [[ "$FIREWALL_ADDRESS" =~ fe80 ]]; then
-	CURL_CALL_PWDCHANGE_1=$(curl -k -6 --interface "$NETWORK_INTERFACE" -s -D - --max-time 1800 --connect-timeout 3 --retry 5 "https://${FIREWALL_ADDRESS}/php/login.php?" --data-raw "prot=https:&server=${FIREWALL_ADDRESS}&authType=init&challengeCookie=&user=${USERNAME}&passwd=${ACTIVE_PASSWORD}&challengePwd=&ok=Log+In")
+	CURL_CALL_PWDCHANGE_1=$(curl -k -6 --interface "$NETWORK_INTERFACE" -s -D - --max-time 1800 --connect-timeout 3 --retry 5 "https://${FIREWALL_ADDRESS}/php/login.php?" -H "Cookie: PHPSESSID=${COOKIE}" --data-raw "prot=https:&server=${FIREWALL_ADDRESS}&authType=init&challengeCookie=&_csrf=${CSRF}&user=${USERNAME}&passwd=${ACTIVE_PASSWORD}&challengePwd=&ok=Log+In")
 else
-	CURL_CALL_PWDCHANGE_1=$(curl -k -s -D - --max-time 1800 --connect-timeout 3 --retry 5 "https://${FIREWALL_ADDRESS}/php/login.php?" --data-raw "prot=https:&server=${FIREWALL_ADDRESS}&authType=init&challengeCookie=&user=${USERNAME}&passwd=${ACTIVE_PASSWORD}&challengePwd=&ok=Log+In")
+	CURL_CALL_PWDCHANGE_1=$(curl -k -s -D - --max-time 1800 --connect-timeout 3 --retry 5 "https://${FIREWALL_ADDRESS}/php/login.php?" -H "Cookie: PHPSESSID=${COOKIE}" --data-raw "prot=https:&server=${FIREWALL_ADDRESS}&authType=init&challengeCookie=&_csrf=${CSRF}&user=${USERNAME}&passwd=${ACTIVE_PASSWORD}&challengePwd=&ok=Log+In")
 fi
 
 if [[ "$CURL_CALL_PWDCHANGE_1" == "" ]]; then
 	date +"%T In function passwordChange(), firewall not responding after 5 retries. Exiting..." >&2
 	return 1
-fi
-
-if ! [[ "$CURL_CALL_PWDCHANGE_1" =~ ^.*PHPSESSID\=([^\;\"]*)[\;\"].* ]]; then
+elif ! [[ "$CURL_CALL_PWDCHANGE_1" =~ ^.*PHPSESSID\=([^\;\"]*)[\;\"].* ]]; then
 	date +"%T In function passwordChange(), missing PHPSESSID cookie in HTTP response. Exiting..." >&2
 	return 1
 fi
 
-date +"%T Attempting to change password for user \"$USERNAME\" to \"$BACKUP_PASSWORD\" as requested by PANOS. The change should not survive a reboot unless explicitly committed." >&2
+# Refresh PHPSESSID
+
+COOKIE=$(echo "$CURL_CALL_PWDCHANGE_1" | grep PHPSESSID | sed -r 's/.*PHPSESSID\=([^;"]*)[;"].*/\1/')
+
+date +"%T Attempting to change password for user \"$USERNAME\" to \"$BACKUP_PASSWORD\" as requested by PANOS. The change might not survive a reboot unless explicitly committed." >&2
 beep >&2
 
-local COOKIE
-COOKIE=$(echo "$CURL_CALL_PWDCHANGE_1" | grep PHPSESSID | sed -r 's/.*PHPSESSID\=([^;"]*)[;"].*/\1/')
+# Change password
 
 local CURL_CALL_PWDCHANGE_2
 if [[ "$FIREWALL_ADDRESS" =~ fe80 ]]; then
@@ -1324,7 +1357,11 @@ do
 				continue
 			else
 
-				# Credentials really are wrong
+				# Credentials really are wrong, unless they're inserted in the keygen query and we just changed passwords
+				
+				if [[ "$1" =~ "type=keygen" ]]; then
+					return 0
+				fi
 				
 				date +"%T Invalid Credentials. Exiting..." >&2
 				return 1
@@ -1406,7 +1443,7 @@ do
 	JOB_AMOUNT=$(echo "$RAW_RESPONSE" | xmlstarlet sel -t -c "count(/response/result/job)" 2>/dev/null)
 	
 	AUTOCOM_STATUS=$(echo "$RAW_RESPONSE" | xmlstarlet sel -t -m "/response/result/job[type='AutoCom']" -v result 2>/dev/null)
-	if [[ "$AUTOCOM_STATUS" == "OK" ]]; then
+	if [[ "$AUTOCOM_STATUS" =~ "OK" ]]; then
 		JUST_REBOOTED=0
 		return 0
 		# This show command goes up to 29 jobs and then hides older jobs, including the autocommit. We assume it completed.
@@ -1760,6 +1797,10 @@ if (( BATCH_MODE == 1 )); then
 		
 		FIREWALL_ADDRESS="[${i}]"
 		
+		# Use the keygen function twice to ensure we get password change notifications post 10.2 and try both passwords
+
+		curler "https://[${i}]/api/?type=keygen&user=${USERNAME}&password=${ACTIVE_PASSWORD}" "/response/@status" 10 1>/dev/null || curler "https://[${i}]/api/?type=keygen&user=${USERNAME}&password=${ACTIVE_PASSWORD}" "/response/@status" 10 1>/dev/null || endbeep
+		
 		SERIAL_1=$(curler "https://[${i}]/api/?type=op&cmd=<show><system><info></info></system></show>" "/response/result/system/serial" 60 2> "${i}".log) || { SERIAL_ARRAY+=( "$i" ); STATUS_ARRAY+=( "FAILED" ); date +"%T Firewall at $i init failed. Skipping..." >> "$LOG_FILE"; date +"%T Firewall at $i init failed. Skipping..."; echo "---FAILED---" >> "${i}.log"; continue; }
 		
 		if [[ "$SERIAL_1" == "" ]]; then
@@ -1943,7 +1984,9 @@ if (( BATCH_MODE == 1 )); then
 			TIME_TAKEN=$(( TIME_END - TIME_START ))
 			echo -n "Total time taken: "
 			TZ=UTC0 printf '%(%Hh %Mm %Ss)T\n' "$TIME_TAKEN"
-			echo "WARNING: the default password may have changed to: ${BACKUP_PASSWORD}"
+			if [[ "$ACTIVE_PASSWORD" != "admin" ]]; then
+				echo "WARNING: the default password may have changed to: ${ACTIVE_PASSWORD}"
+			fi
 			echo "Exiting..."
 			break
 		fi
@@ -1955,8 +1998,9 @@ if (( BATCH_MODE == 1 )); then
 fi
 
 # Set active password the first time to avoid constant password swap, as curler is usually called in a subshell
+# Use the keygen function to ensure we get password change notifications post 10.2
 
-curler "https://${FIREWALL_ADDRESS}/api/?type=op&cmd=<show><system><info></info></system></show>" "/response/@status" 10 1>/dev/null || endbeep
+curler "https://${FIREWALL_ADDRESS}/api/?type=keygen&user=${USERNAME}&password=${ACTIVE_PASSWORD}" "/response/@status" 10 1>/dev/null || endbeep
 
 checkAutoCom "$FIREWALL_ADDRESS" || endbeep
 
