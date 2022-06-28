@@ -179,6 +179,7 @@ For configuration files:
 	Configuration files are searched for recursively in the general firmware folder, and must be in the format $SERIAL_NUMBER-config.xml, e.g. \"01234567890-config.xml\"
 	Run the script with a target version identical to the current version to quickly install a config file without upgrading.
 	Supports multiple firewalls in batch mode by placing a different config file for each serial number (similarly to firewall bootstrapping).
+	The script will log a diff between the config file and the final running config to double check the results.
 	
 For Panorama authkeys:
 
