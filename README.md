@@ -16,7 +16,7 @@ This shell script is primarily intended as a quick and easy way to upgrade Palo 
 
 ### NEW in v1.4
 
-Threat, config, and license support allows the script to fully prepare a firewall or batch of firewalls for production automatically, without user intervention.
+**Threat, config, and license support allows the script to fully prepare a firewall or batch of firewalls for production automatically, without user intervention.**
 
 * Automated Threat and Antivirus package installation
 * Per-serial license file upload
