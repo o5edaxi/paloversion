@@ -44,6 +44,8 @@ EASY_REGEX='^PanOS[^-]*-(.+)$'
 
 #####################################################################
 
+CURL_CA_IGNORE="-k"
+
 shopt -s expand_aliases
 
 alias beep="{ echo -ne '\007'; }"
@@ -56,33 +58,47 @@ trap "kill 0" SIGINT
 
 usage="The following options are supported:
 
-	-h	Displays instructions
-	-d	Dry run
-	-s	Shutdown after completion
-	-l	Lazy mode
-	-e	Easy mode
-	-x	Enable debug
-	-f	Batch mode
-	-z	Non-interactive mode
-	-m	Disable MAC Filter for batch mode
+	-h				Displays instructions
+	-d				Dry run
+	-s				Shutdown after completion
+	-l				Lazy mode
+	-e				Easy mode
+	-x				Enable debug
+	-f				Batch mode
+	-k				Install licenses
+	-t \"STRING\"			Install Threats
+	-a \"STRING\"			Install Antivirus
+	-c				Upload & commit custom config
+	-p \"STRING\"			Set Panorama Authkey
+	-z \"STRING\"			Non-interactive mode
+	-m				Disable MAC Filter for batch mode
+	-q				Validate firewall certificates
+	-i				Ignore autocommit and process errors
+
+Usage: paloversion.sh [ -hdsxkcpmiq ] [ -e | -lzf ] [ -t threat_file ] [ -a antivirus_file ] [ -p panorama_authkey ] [ -z fw_address user password files_folder target_version [ network_interface ] ]
 
 "
 
-help="This script automatically upgrades a Palo Alto firewall. Please add the firmware files in the preferred folder and edit the .csv for the platform accordingly.
+help="
+
+This script automatically upgrades a Palo Alto firewall. Please add the firmware files in the preferred folder and edit the .csv for the platform accordingly.
+To avoid the need for the .csv files, manual upgrade paths are also supported (see -e below).
+
+Usage: paloversion.sh [ -hdsxkcpmiq ] [ -e | -lzf ] [ -t threat_file ] [ -a antivirus_file ] [ -p panorama_authkey ] [ -z fw_address user password files_folder target_version [ network_interface ] ]
 
 Options:
 
 	-h	help
 
-	Displays these instructions.
+	Displays these instructions
 
 	-d	dry-run
 
-	Outputs the operations without performing any action on the firewall.
+	Outputs the operations without performing any action on the firewall
 
 	-s	shutdown
 
-	Shuts down the firewall after performing the upgrades.
+	Shuts down the firewall after performing the upgrades
 	
 	-l	lazy
 	
@@ -92,27 +108,84 @@ Options:
 	
 	Allows the user to list the upgrade steps and files manually, and doesn't check file hashes
 	
-	-x  debug
+	-x	debug
 	
 	Bash debug mode
 	
-	-f  factory-batch mode
+	-f	factory-batch mode
 	
-	This mode will search for one or more firewalls on the same L2 broadcast domain as the host, and automatically upgrade them by using their IPv6 link-local address.
+	This mode will search for one or more firewalls on the same L2 broadcast domain as the host, and automatically upgrade them by using their IPv6 link-local address
 	
-	-z  non-interactive mode
+	-k	licenses
 	
-	Requires all input as arguments to the script (eg. PaloVersion.sh -l -z \"192.0.2.1\" \"admin\" \"password\" \"/home/PA/Firmware/\" \"8.1.15-h3\")
+	Install license files before starting upgrade
 	
-	-m
+	-t	threats
 	
-	Disable checks for valid Palo Alto MAC addresses, upgrades all firewalls on broadcast domain
+	Install App&Threats packages after upgrade (requires -a flag)
+	
+	-a	antivirus
+	
+	Install Antivirus packages after upgrade (requires -t flag)
+	
+	-c	configuration
+	
+	Upload and commit a configuration after upgrade
+	
+	-p	panorama authkey
+	
+	Set a Panorama authkey after upgrade (10.1 and above)
+	
+	-z	non-interactive mode
+	
+	Requires all input as arguments to the script, e.g.:
+	paloversion.sh -p \"2:12345AUTHKEY\" -t \"panupv2-all-contents-1234-5678\" -a \"panup-all-antivirus-1234-5678\"  -lzc \"192.0.2.1\" \"admin\" \"password\" \"/home/PA/Firmware/\" \"8.1.15-h3\"
+	Arguments are mandatory according to the features selected.
+	
+	-m disable batch mode MAC filter
+	
+	Disable checks for valid Palo Alto MAC addresses, upgrades all firewalls on broadcast domain (requires -f)
+	
+	-q validate firewall certificates
+	
+	Enforces trusted CAs for every HTTPS connection
+	
+	-i ignore autocommit and process errors
+	
+	Autocommit/Process errors during upgrades and downgrades will not stop the activity
 
 Easy mode:
 
 	You will be prompted to enter the file names that will be installed in order, separated by a space. Enter a capital \"R\" to indicate a reboot step, e.g:
 	PanOS_800-9.1.9 R PanOS_800-10.0.0 R PanOS_800-10.1.0 PanOS_800-10.1.4 R
-	All filenames must be original as downloaded from the support website.
+	All filenames must be original as downloaded from the support website. You will also be prompted for an App package to bypass the need for the content.csv file.
+	The files will be recursively searched for in the selected folder path.
+
+For licenses:
+
+	License files are searched for recursively in the general firmware folder, and must be in the format $SERIAL_NUMBER-$LICENSE.key as downloaded from the CSP, e.g. \"01234567890-support.key\"
+	Run the script with a target version identical to the current version to quickly install licenses without upgrading.
+	Supports multiple firewalls in batch mode by placing one or more license files for each serial number.
+
+For Threat and Antivirus:
+
+	App&Threat and Anti-Virus packages are searched for recursively in the general firmware folder with the name specified at run time.
+	A content file must be set even if the content.csv file already specifies App&Threat packages.
+	Run the script with a target version identical to the current version to quickly install packages without upgrading.
+	Supports multiple firewalls in batch mode.
+
+For configuration files:
+
+	Configuration files are searched for recursively in the general firmware folder, and must be in the format $SERIAL_NUMBER-config.xml, e.g. \"01234567890-config.xml\"
+	Run the script with a target version identical to the current version to quickly install a config file without upgrading.
+	Supports multiple firewalls in batch mode by placing a different config file for each serial number (similarly to firewall bootstrapping).
+	
+For Panorama authkeys:
+
+	The authkey is inserted at run time, and when using batch mode must work for all firewalls in the batch.
+	Please note that 88 character authkeys are bugged for firewalls <10.1.3, so it is recommended to target a more recent version if onboarding to Panorama.
+	Run the script with a target version identical to the current version to quickly set authkeys without upgrading.
+	The script will exit if the firewall refuses the authkey.
 
 CSV files must be named after the platform family (e.g. \"800.csv\", this is visible in the output of \"show system info\" on the firewall) and have the following format:
 
@@ -154,7 +227,7 @@ Example:
 
 	"
 
-while getopts 'hdslexfzm' option; do
+while getopts 'hdslexfzmkt:a:cp:qi' option; do
   case "$option" in
     h) echo "$help"
        exit
@@ -170,10 +243,24 @@ while getopts 'hdslexfzm' option; do
 	x) DEBUG=1
 	   ;;
 	f) BATCH_MODE=1
-       ;;
+	   ;;
+	k) UPLOAD_LICENSES=1
+	   ;;
+	t) INSTALL_THREATS=1; THREAT_FILENAME="$OPTARG"
+	   ;;
+	a) INSTALL_THREATS=1; ANTIVIRUS_FILENAME="$OPTARG"
+	   ;;
+	c) INSTALL_CONFIG=1
+	   ;;
+	p) SET_PRA_AUTHKEY=1; PANORAMA_AUTHKEY="$OPTARG"
+	   ;;
 	z) NON_INTERACTIVE=1
 	   ;;
 	m) DISABLE_OUI=1
+	   ;;
+	q) unset CURL_CA_IGNORE
+	   ;;
+	i) IGNORE_ERRORS=1
 	   ;;
    \?) printf "illegal option: -%s\n" "$OPTARG" >&2
        echo "$usage" >&2
@@ -182,6 +269,17 @@ while getopts 'hdslexfzm' option; do
   esac
 done
 shift $((OPTIND - 1))
+
+if (( INSTALL_THREATS == 1 )); then
+	if [[ "$ANTIVIRUS_FILENAME" == "" ]]; then
+		echo "The -t option requires a filename and the -a option to be set. Exiting..."
+		endbeep
+	fi
+	if [[ "$THREAT_FILENAME" == "" ]]; then
+		echo "The -a option requires a filename and the -t option to be set. Exiting..."
+		endbeep
+	fi
+fi
 
 ##########################################################################################################################################################################################
 # Checks if the requested version is found in the csv files
@@ -614,9 +712,9 @@ if [[ "$CURRENT_VERSION" =~ ^([0-9]|10)\.[0-1]\. ]] || [[ "$CURRENT_VERSION" =~ 
 	
 	local CURL_CALL_UPLOAD_0
 	if [[ "$FIREWALL_ADDRESS" =~ fe80 ]]; then
-		CURL_CALL_UPLOAD_0=$(curl -k -6 --interface "$NETWORK_INTERFACE" -s -D - --max-time 120 --connect-timeout 10 --retry 5 "https://$FIREWALL_ADDRESS/php/login.php?" --data-raw "prot=https:&server=$FIREWALL_ADDRESS&authType=init&challengeCookie=&user=${USERNAME}&passwd=${ACTIVE_PASSWORD}&challengePwd=&ok=Log+In" 2>/dev/null)
+		CURL_CALL_UPLOAD_0=$(curl $CURL_CA_IGNORE -6 --interface "$NETWORK_INTERFACE" -s -D - --max-time 120 --connect-timeout 10 --retry 5 "https://$FIREWALL_ADDRESS/php/login.php?" --data-raw "prot=https:&server=$FIREWALL_ADDRESS&authType=init&challengeCookie=&user=${USERNAME}&passwd=${ACTIVE_PASSWORD}&challengePwd=&ok=Log+In" 2>/dev/null)
 	else
-		CURL_CALL_UPLOAD_0=$(curl -k -s -D - --max-time 120 --connect-timeout 10 --retry 5 "https://$FIREWALL_ADDRESS/php/login.php?" --data-raw "prot=https:&server=$FIREWALL_ADDRESS&authType=init&challengeCookie=&user=${USERNAME}&passwd=${ACTIVE_PASSWORD}&challengePwd=&ok=Log+In" 2>/dev/null)
+		CURL_CALL_UPLOAD_0=$(curl $CURL_CA_IGNORE -s -D - --max-time 120 --connect-timeout 10 --retry 5 "https://$FIREWALL_ADDRESS/php/login.php?" --data-raw "prot=https:&server=$FIREWALL_ADDRESS&authType=init&challengeCookie=&user=${USERNAME}&passwd=${ACTIVE_PASSWORD}&challengePwd=&ok=Log+In" 2>/dev/null)
 	fi
 	
 	if [[ "$CURL_CALL_UPLOAD_0" == "" ]]; then
@@ -634,9 +732,9 @@ if [[ "$CURRENT_VERSION" =~ ^([0-9]|10)\.[0-1]\. ]] || [[ "$CURRENT_VERSION" =~ 
 	
 	local CURL_CALL_UPLOAD_1
 	if [[ "$FIREWALL_ADDRESS" =~ fe80 ]]; then
-		CURL_CALL_UPLOAD_1=$(curl -k -6 --interface "$NETWORK_INTERFACE" -s -D - --max-time 120 --connect-timeout 10 --retry 5 -X GET -H "Cookie: PHPSESSID=$COOKIE_PHP" "https://$FIREWALL_ADDRESS/" )
+		CURL_CALL_UPLOAD_1=$(curl $CURL_CA_IGNORE -6 --interface "$NETWORK_INTERFACE" -s -D - --max-time 120 --connect-timeout 10 --retry 5 -X GET -H "Cookie: PHPSESSID=$COOKIE_PHP" "https://$FIREWALL_ADDRESS/" )
 	else
-		CURL_CALL_UPLOAD_1=$(curl -k -s -D - --max-time 120 --connect-timeout 10 --retry 5 -X GET -H "Cookie: PHPSESSID=$COOKIE_PHP" "https://$FIREWALL_ADDRESS/" )
+		CURL_CALL_UPLOAD_1=$(curl $CURL_CA_IGNORE -s -D - --max-time 120 --connect-timeout 10 --retry 5 -X GET -H "Cookie: PHPSESSID=$COOKIE_PHP" "https://$FIREWALL_ADDRESS/" )
 	fi
 	
 	if ! [[ "$CURL_CALL_UPLOAD_1" =~ ^.*window\.Pan\.st\.st\.st[0-9]+\ \=\ \"[^\"]+\".* ]]; then
@@ -657,9 +755,9 @@ if [[ "$CURRENT_VERSION" =~ ^([0-9]|10)\.[0-1]\. ]] || [[ "$CURRENT_VERSION" =~ 
 	
 	local CURL_CALL_UPLOAD_2
 	if [[ "$FIREWALL_ADDRESS" =~ fe80 ]]; then
-		CURL_CALL_UPLOAD_2=$(curl -k -6 --interface "$NETWORK_INTERFACE" --retry 5 --max-time 1800 --connect-timeout 10 -F ___tid="$TID" -F ___token="${TOKEN_RPC}" -F file_path=@"${FILE_PATH}" "https://$FIREWALL_ADDRESS/upload/upload_software.php" -H "Cookie: PHPSESSID=$COOKIE_PHP") || { date +"%T Software upload not done after 30 minutes. Exiting..." >&2; return 1; }
+		CURL_CALL_UPLOAD_2=$(curl $CURL_CA_IGNORE -6 --interface "$NETWORK_INTERFACE" --retry 5 --max-time 1800 --connect-timeout 10 -F ___tid="$TID" -F ___token="${TOKEN_RPC}" -F file_path=@"${FILE_PATH}" "https://$FIREWALL_ADDRESS/upload/upload_software.php" -H "Cookie: PHPSESSID=$COOKIE_PHP") || { date +"%T Software upload not done after 30 minutes. Exiting..." >&2; return 1; }
 	else
-		CURL_CALL_UPLOAD_2=$(curl -k --retry 5 --max-time 1800 --connect-timeout 10 -F ___tid="$TID" -F ___token="${TOKEN_RPC}" -F file_path=@"${FILE_PATH}" "https://$FIREWALL_ADDRESS/upload/upload_software.php" -H "Cookie: PHPSESSID=$COOKIE_PHP") || { date +"%T Software upload not done after 30 minutes. Exiting..." >&2; return 1; }
+		CURL_CALL_UPLOAD_2=$(curl $CURL_CA_IGNORE --retry 5 --max-time 1800 --connect-timeout 10 -F ___tid="$TID" -F ___token="${TOKEN_RPC}" -F file_path=@"${FILE_PATH}" "https://$FIREWALL_ADDRESS/upload/upload_software.php" -H "Cookie: PHPSESSID=$COOKIE_PHP") || { date +"%T Software upload not done after 30 minutes. Exiting..." >&2; return 1; }
 	fi
 	
 	if ! ( [[ "$CURL_CALL_UPLOAD_2" =~ success[\"\ ]*\:[\"\ ]*true ]] || [[ "$CURL_CALL_UPLOAD_2" =~ status[\"\ ]*\:[\"\ ]*success ]] ); then
@@ -678,9 +776,9 @@ if [[ "$CURRENT_VERSION" =~ ^([0-9]|10)\.[0-1]\. ]] || [[ "$CURRENT_VERSION" =~ 
 	
 	local CURL_CALL_UPLOAD_3
 	if [[ "$FIREWALL_ADDRESS" =~ fe80 ]]; then
-		CURL_CALL_UPLOAD_3=$(curl -k -6 --interface "$NETWORK_INTERFACE" -s --retry 5 --max-time 240 --connect-timeout 10 "https://$FIREWALL_ADDRESS/php/utils/router.php/SoftwareAndContentUtils.importPackage" -H "Cookie: PHPSESSID=$COOKIE_PHP" -H "Content-Type: application/json" --data-raw "{\"action\":\"PanDirect\",\"method\":\"execute\",\"data\":[\"${TOKEN_RPC}\",\"SoftwareAndContentUtils.importPackage\",{\"deploy\":false,\"localFilePath\":\"${FILEPATH_RPC}\",\"clientFileName\":\"${FILE_RPC}\",\"packageType\":\"software\",\"syncToPeer\":\"no\"}],\"type\":\"rpc\",\"tid\":\"$TID\"}" 2>/dev/null)
+		CURL_CALL_UPLOAD_3=$(curl $CURL_CA_IGNORE -6 --interface "$NETWORK_INTERFACE" -s --retry 5 --max-time 240 --connect-timeout 10 "https://$FIREWALL_ADDRESS/php/utils/router.php/SoftwareAndContentUtils.importPackage" -H "Cookie: PHPSESSID=$COOKIE_PHP" -H "Content-Type: application/json" --data-raw "{\"action\":\"PanDirect\",\"method\":\"execute\",\"data\":[\"${TOKEN_RPC}\",\"SoftwareAndContentUtils.importPackage\",{\"deploy\":false,\"localFilePath\":\"${FILEPATH_RPC}\",\"clientFileName\":\"${FILE_RPC}\",\"packageType\":\"software\",\"syncToPeer\":\"no\"}],\"type\":\"rpc\",\"tid\":\"$TID\"}" 2>/dev/null)
 	else
-		CURL_CALL_UPLOAD_3=$(curl -k -s --retry 5 --max-time 240 --connect-timeout 10 "https://$FIREWALL_ADDRESS/php/utils/router.php/SoftwareAndContentUtils.importPackage" -H "Cookie: PHPSESSID=$COOKIE_PHP" -H "Content-Type: application/json" --data-raw "{\"action\":\"PanDirect\",\"method\":\"execute\",\"data\":[\"${TOKEN_RPC}\",\"SoftwareAndContentUtils.importPackage\",{\"deploy\":false,\"localFilePath\":\"${FILEPATH_RPC}\",\"clientFileName\":\"${FILE_RPC}\",\"packageType\":\"software\",\"syncToPeer\":\"no\"}],\"type\":\"rpc\",\"tid\":\"$TID\"}" 2>/dev/null)
+		CURL_CALL_UPLOAD_3=$(curl $CURL_CA_IGNORE -s --retry 5 --max-time 240 --connect-timeout 10 "https://$FIREWALL_ADDRESS/php/utils/router.php/SoftwareAndContentUtils.importPackage" -H "Cookie: PHPSESSID=$COOKIE_PHP" -H "Content-Type: application/json" --data-raw "{\"action\":\"PanDirect\",\"method\":\"execute\",\"data\":[\"${TOKEN_RPC}\",\"SoftwareAndContentUtils.importPackage\",{\"deploy\":false,\"localFilePath\":\"${FILEPATH_RPC}\",\"clientFileName\":\"${FILE_RPC}\",\"packageType\":\"software\",\"syncToPeer\":\"no\"}],\"type\":\"rpc\",\"tid\":\"$TID\"}" 2>/dev/null)
 	fi
 	
 	if [[ "$CURL_CALL_UPLOAD_3" == "" ]]; then
@@ -803,9 +901,9 @@ fi
 SECONDS=0
 local REBOOT_CURL_1
 if [[ "$FIREWALL_ADDRESS" =~ fe80 ]]; then
-	REBOOT_CURL_1=$(curl -s -k -6 --interface "$NETWORK_INTERFACE" -u "${USERNAME}":"${ACTIVE_PASSWORD}" --max-time 120 --connect-timeout 3 -X GET "https://${FIREWALL_ADDRESS}/api/?type=op&cmd=<show><system><info></info></system></show>" | xmlstarlet sel -t -v "/response/@status" 2>/dev/null)
+	REBOOT_CURL_1=$(curl -s $CURL_CA_IGNORE -6 --interface "$NETWORK_INTERFACE" -u "${USERNAME}":"${ACTIVE_PASSWORD}" --max-time 120 --connect-timeout 3 -X GET "https://${FIREWALL_ADDRESS}/api/?type=op&cmd=<show><system><info></info></system></show>" | xmlstarlet sel -t -v "/response/@status" 2>/dev/null)
 else
-	REBOOT_CURL_1=$(curl -s -k -u "${USERNAME}":"${ACTIVE_PASSWORD}" --max-time 120 --connect-timeout 3 -X GET "https://${FIREWALL_ADDRESS}/api/?type=op&cmd=<show><system><info></info></system></show>" | xmlstarlet sel -t -v "/response/@status" 2>/dev/null)
+	REBOOT_CURL_1=$(curl -s $CURL_CA_IGNORE -u "${USERNAME}":"${ACTIVE_PASSWORD}" --max-time 120 --connect-timeout 3 -X GET "https://${FIREWALL_ADDRESS}/api/?type=op&cmd=<show><system><info></info></system></show>" | xmlstarlet sel -t -v "/response/@status" 2>/dev/null)
 fi
 
 while [[ "$REBOOT_CURL_1" == "success" ]];
@@ -817,9 +915,9 @@ do
 	sleep 5
 	
 	if [[ "$FIREWALL_ADDRESS" =~ fe80 ]]; then
-		REBOOT_CURL_1=$(curl -s -k -6 --interface "$NETWORK_INTERFACE" -u "${USERNAME}":"${ACTIVE_PASSWORD}" --max-time 120 --connect-timeout 3 -X GET "https://${FIREWALL_ADDRESS}/api/?type=op&cmd=<show><system><info></info></system></show>" | xmlstarlet sel -t -v "/response/@status" 2>/dev/null)
+		REBOOT_CURL_1=$(curl -s $CURL_CA_IGNORE -6 --interface "$NETWORK_INTERFACE" -u "${USERNAME}":"${ACTIVE_PASSWORD}" --max-time 120 --connect-timeout 3 -X GET "https://${FIREWALL_ADDRESS}/api/?type=op&cmd=<show><system><info></info></system></show>" | xmlstarlet sel -t -v "/response/@status" 2>/dev/null)
 	else
-		REBOOT_CURL_1=$(curl -s -k -u "${USERNAME}":"${ACTIVE_PASSWORD}" --max-time 120 --connect-timeout 3 -X GET "https://${FIREWALL_ADDRESS}/api/?type=op&cmd=<show><system><info></info></system></show>" | xmlstarlet sel -t -v "/response/@status" 2>/dev/null)
+		REBOOT_CURL_1=$(curl -s $CURL_CA_IGNORE -u "${USERNAME}":"${ACTIVE_PASSWORD}" --max-time 120 --connect-timeout 3 -X GET "https://${FIREWALL_ADDRESS}/api/?type=op&cmd=<show><system><info></info></system></show>" | xmlstarlet sel -t -v "/response/@status" 2>/dev/null)
 	fi
 
 done
@@ -852,9 +950,9 @@ SECONDS=0
 
 local SHUTDOWN_CURL_1
 if [[ "$FIREWALL_ADDRESS" =~ fe80 ]]; then
-	SHUTDOWN_CURL_1=$(curl -s -k -6 --interface "$NETWORK_INTERFACE" -u "${USERNAME}":"${ACTIVE_PASSWORD}" --max-time 1800 --connect-timeout 3 -X GET "https://${FIREWALL_ADDRESS}/api/?type=op&cmd=<show><system><info></info></system></show>" | xmlstarlet sel -t -v "/response/@status" 2>/dev/null)
+	SHUTDOWN_CURL_1=$(curl -s $CURL_CA_IGNORE -6 --interface "$NETWORK_INTERFACE" -u "${USERNAME}":"${ACTIVE_PASSWORD}" --max-time 1800 --connect-timeout 3 -X GET "https://${FIREWALL_ADDRESS}/api/?type=op&cmd=<show><system><info></info></system></show>" | xmlstarlet sel -t -v "/response/@status" 2>/dev/null)
 else
-	SHUTDOWN_CURL_1=$(curl -s -k -u "${USERNAME}":"${ACTIVE_PASSWORD}" --max-time 1800 --connect-timeout 3 -X GET "https://${FIREWALL_ADDRESS}/api/?type=op&cmd=<show><system><info></info></system></show>" | xmlstarlet sel -t -v "/response/@status" 2>/dev/null)
+	SHUTDOWN_CURL_1=$(curl -s $CURL_CA_IGNORE -u "${USERNAME}":"${ACTIVE_PASSWORD}" --max-time 1800 --connect-timeout 3 -X GET "https://${FIREWALL_ADDRESS}/api/?type=op&cmd=<show><system><info></info></system></show>" | xmlstarlet sel -t -v "/response/@status" 2>/dev/null)
 fi
 
 while [[ "$SHUTDOWN_CURL_1" == "success" ]];
@@ -865,9 +963,9 @@ do
 	fi
 	sleep 5
 	if [[ "$FIREWALL_ADDRESS" =~ fe80 ]]; then
-		SHUTDOWN_CURL_1=$(curl -s -k -6 --interface "$NETWORK_INTERFACE" -u "${USERNAME}":"${ACTIVE_PASSWORD}" --max-time 1800 --connect-timeout 3 -X GET "https://${FIREWALL_ADDRESS}/api/?type=op&cmd=<show><system><info></info></system></show>" | xmlstarlet sel -t -v "/response/@status" 2>/dev/null)
+		SHUTDOWN_CURL_1=$(curl -s $CURL_CA_IGNORE -6 --interface "$NETWORK_INTERFACE" -u "${USERNAME}":"${ACTIVE_PASSWORD}" --max-time 1800 --connect-timeout 3 -X GET "https://${FIREWALL_ADDRESS}/api/?type=op&cmd=<show><system><info></info></system></show>" | xmlstarlet sel -t -v "/response/@status" 2>/dev/null)
 	else
-		SHUTDOWN_CURL_1=$(curl -s -k -u "${USERNAME}":"${ACTIVE_PASSWORD}" --max-time 1800 --connect-timeout 3 -X GET "https://${FIREWALL_ADDRESS}/api/?type=op&cmd=<show><system><info></info></system></show>" | xmlstarlet sel -t -v "/response/@status" 2>/dev/null)
+		SHUTDOWN_CURL_1=$(curl -s $CURL_CA_IGNORE -u "${USERNAME}":"${ACTIVE_PASSWORD}" --max-time 1800 --connect-timeout 3 -X GET "https://${FIREWALL_ADDRESS}/api/?type=op&cmd=<show><system><info></info></system></show>" | xmlstarlet sel -t -v "/response/@status" 2>/dev/null)
 	fi
 	
 done
@@ -943,48 +1041,47 @@ fi
 
 if checkContentPresent "$CONTENT_FILE"; then
 	date +"%T Content file $CONTENT_FILE is already available on the firewall." >&2
-	return 0
+else
+	UPLOAD_CHECKSUM=$(fileChecksumContent "content.csv" "$CONTENT_FILE") || return 1
+	
+	FILE_PATH=$(find "$SOFTWARE_FOLDER" -name "$CONTENT_FILE")
+	
+	if [[ "$FILE_PATH" == "" ]]; then
+		date +"%T Image file $CONTENT_FILE not found. Exiting..." >&2
+		return 1
+	fi
+	CALC_CHECKSUM=$(sha256sum "$FILE_PATH" | cut -d ' ' -f 1)
+	shopt -s nocasematch
+	if ! [[ "$UPLOAD_CHECKSUM" =~ $CALC_CHECKSUM ]]; then
+		date +"%T Image file $FILE_PATH has invalid checksum. Exiting..." >&2
+		echo "Required: $UPLOAD_CHECKSUM" >&2
+		echo "File: $CALC_CHECKSUM" >&2
+		return 1
+	fi
+	shopt -u nocasematch
+	
+	# Proceed with uploading the file
+	
+	checkAutoCom "$FIREWALL_ADDRESS" || return 1
+	
+	local RESULT_CUPLOAD_1
+	RESULT_CUPLOAD_1=$(curler "https://${FIREWALL_ADDRESS}/api/?type=op&cmd=<show><system><info></info></system></show>" "/response/@status" 10) || return 1
+	
+	if [[ "$RESULT_CUPLOAD_1" != "success" ]]; then
+		date +"%T Firewall not up while preparing to upload content. Exiting..." >&2
+		return 1
+	fi
+	
+	date +"%T Firewall at ${FIREWALL_ADDRESS} is now up. Uploading content..." >&2
+	
+	local RESULT_CUPLOAD_2
+	SILENT_CURL=""
+	RESULT_CUPLOAD_2=$(curler "https://${FIREWALL_ADDRESS}/api/?type=import&category=content" "/response/@status" 300 "-F" "file=@${FILE_PATH}") || { SILENT_CURL="-s"; return 1; }
+	SILENT_CURL="-s"
+	
+	# "request content upgrade info" doesn't properly show uploaded packages
+	#checkContentPresent "$CONTENT_FILE" || { date +"%T Content upload failed. Exiting..." >&2; return 1; }
 fi
-
-UPLOAD_CHECKSUM=$(fileChecksumContent "content.csv" "$CONTENT_FILE") || return 1
-
-FILE_PATH=$(find "$SOFTWARE_FOLDER" -name "$CONTENT_FILE")
-
-if [[ "$FILE_PATH" == "" ]]; then
-	date +"%T Image file $CONTENT_FILE not found. Exiting..." >&2
-	return 1
-fi
-CALC_CHECKSUM=$(sha256sum "$FILE_PATH" | cut -d ' ' -f 1)
-shopt -s nocasematch
-if ! [[ "$UPLOAD_CHECKSUM" =~ $CALC_CHECKSUM ]]; then
-	date +"%T Image file $FILE_PATH has invalid checksum. Exiting..." >&2
-	echo "Required: $UPLOAD_CHECKSUM" >&2
-	echo "File: $CALC_CHECKSUM" >&2
-	return 1
-fi
-shopt -u nocasematch
-
-# Proceed with uploading the file
-
-checkAutoCom "$FIREWALL_ADDRESS" || return 1
-
-local RESULT_CUPLOAD_1
-RESULT_CUPLOAD_1=$(curler "https://${FIREWALL_ADDRESS}/api/?type=op&cmd=<show><system><info></info></system></show>" "/response/@status" 10) || return 1
-
-if [[ "$RESULT_CUPLOAD_1" != "success" ]]; then
-	date +"%T Firewall not up while preparing to upload content. Exiting..." >&2
-	return 1
-fi
-
-date +"%T Firewall at ${FIREWALL_ADDRESS} is now up. Uploading content..." >&2
-
-local RESULT_CUPLOAD_2
-SILENT_CURL=""
-RESULT_CUPLOAD_2=$(curler "https://${FIREWALL_ADDRESS}/api/?type=import&category=content" "/response/@status" 300 "-F" "file=@${FILE_PATH}") || { SILENT_CURL="-s"; return 1; }
-SILENT_CURL="-s"
-
-# "request content upgrade info" doesn't properly show uploaded packages
-#checkContentPresent "$CONTENT_FILE" || { date +"%T Content upload failed. Exiting..." >&2; return 1; }
 
 # Proceed with installing the file
 
@@ -1166,9 +1263,9 @@ passwordChange(){
 
 local CURL_CALL_PWDCHANGE_0
 if [[ "$FIREWALL_ADDRESS" =~ fe80 ]]; then
-	CURL_CALL_PWDCHANGE_0=$(curl -k -6 --interface "$NETWORK_INTERFACE" -s -D - --max-time 1800 --connect-timeout 3 --retry 5 "https://${FIREWALL_ADDRESS}/php/login.php?")
+	CURL_CALL_PWDCHANGE_0=$(curl $CURL_CA_IGNORE -6 --interface "$NETWORK_INTERFACE" -s -D - --max-time 1800 --connect-timeout 3 --retry 5 "https://${FIREWALL_ADDRESS}/php/login.php?")
 else
-	CURL_CALL_PWDCHANGE_0=$(curl -k -s -D - --max-time 1800 --connect-timeout 3 --retry 5 "https://${FIREWALL_ADDRESS}/php/login.php?")
+	CURL_CALL_PWDCHANGE_0=$(curl $CURL_CA_IGNORE -s -D - --max-time 1800 --connect-timeout 3 --retry 5 "https://${FIREWALL_ADDRESS}/php/login.php?")
 fi
 
 if [[ "$CURL_CALL_PWDCHANGE_0" == "" ]]; then
@@ -1196,9 +1293,9 @@ COOKIE=$(echo "$CURL_CALL_PWDCHANGE_0" | grep PHPSESSID | sed -r 's/.*PHPSESSID\
 
 local CURL_CALL_PWDCHANGE_1
 if [[ "$FIREWALL_ADDRESS" =~ fe80 ]]; then
-	CURL_CALL_PWDCHANGE_1=$(curl -k -6 --interface "$NETWORK_INTERFACE" -s -D - --max-time 1800 --connect-timeout 3 --retry 5 "https://${FIREWALL_ADDRESS}/php/login.php?" -H "Cookie: PHPSESSID=${COOKIE}" --data-raw "prot=https:&server=${FIREWALL_ADDRESS}&authType=init&challengeCookie=&_csrf=${CSRF}&user=${USERNAME}&passwd=${ACTIVE_PASSWORD}&challengePwd=&ok=Log+In")
+	CURL_CALL_PWDCHANGE_1=$(curl $CURL_CA_IGNORE -6 --interface "$NETWORK_INTERFACE" -s -D - --max-time 1800 --connect-timeout 3 --retry 5 "https://${FIREWALL_ADDRESS}/php/login.php?" -H "Cookie: PHPSESSID=${COOKIE}" --data-raw "prot=https:&server=${FIREWALL_ADDRESS}&authType=init&challengeCookie=&_csrf=${CSRF}&user=${USERNAME}&passwd=${ACTIVE_PASSWORD}&challengePwd=&ok=Log+In")
 else
-	CURL_CALL_PWDCHANGE_1=$(curl -k -s -D - --max-time 1800 --connect-timeout 3 --retry 5 "https://${FIREWALL_ADDRESS}/php/login.php?" -H "Cookie: PHPSESSID=${COOKIE}" --data-raw "prot=https:&server=${FIREWALL_ADDRESS}&authType=init&challengeCookie=&_csrf=${CSRF}&user=${USERNAME}&passwd=${ACTIVE_PASSWORD}&challengePwd=&ok=Log+In")
+	CURL_CALL_PWDCHANGE_1=$(curl $CURL_CA_IGNORE -s -D - --max-time 1800 --connect-timeout 3 --retry 5 "https://${FIREWALL_ADDRESS}/php/login.php?" -H "Cookie: PHPSESSID=${COOKIE}" --data-raw "prot=https:&server=${FIREWALL_ADDRESS}&authType=init&challengeCookie=&_csrf=${CSRF}&user=${USERNAME}&passwd=${ACTIVE_PASSWORD}&challengePwd=&ok=Log+In")
 fi
 
 if [[ "$CURL_CALL_PWDCHANGE_1" == "" ]]; then
@@ -1220,9 +1317,9 @@ beep >&2
 
 local CURL_CALL_PWDCHANGE_2
 if [[ "$FIREWALL_ADDRESS" =~ fe80 ]]; then
-	CURL_CALL_PWDCHANGE_2=$(curl -k -6 --interface "$NETWORK_INTERFACE" -s --max-time 1800 --connect-timeout 3 --retry 5 "https://${FIREWALL_ADDRESS}/unauth/php/change_password.php" -H "Cookie: PHPSESSID=${COOKIE}" --data-raw "old_password=${ACTIVE_PASSWORD}&new_password=${BACKUP_PASSWORD}&new_password_confirm=${BACKUP_PASSWORD}&ok=Change+Password")
+	CURL_CALL_PWDCHANGE_2=$(curl $CURL_CA_IGNORE -6 --interface "$NETWORK_INTERFACE" -s --max-time 1800 --connect-timeout 3 --retry 5 "https://${FIREWALL_ADDRESS}/unauth/php/change_password.php" -H "Cookie: PHPSESSID=${COOKIE}" --data-raw "old_password=${ACTIVE_PASSWORD}&new_password=${BACKUP_PASSWORD}&new_password_confirm=${BACKUP_PASSWORD}&ok=Change+Password")
 else
-	CURL_CALL_PWDCHANGE_2=$(curl -k -s --max-time 1800 --connect-timeout 3 --retry 5 "https://${FIREWALL_ADDRESS}/unauth/php/change_password.php" -H "Cookie: PHPSESSID=${COOKIE}" --data-raw "old_password=${ACTIVE_PASSWORD}&new_password=${BACKUP_PASSWORD}&new_password_confirm=${BACKUP_PASSWORD}&ok=Change+Password")
+	CURL_CALL_PWDCHANGE_2=$(curl $CURL_CA_IGNORE -s --max-time 1800 --connect-timeout 3 --retry 5 "https://${FIREWALL_ADDRESS}/unauth/php/change_password.php" -H "Cookie: PHPSESSID=${COOKIE}" --data-raw "old_password=${ACTIVE_PASSWORD}&new_password=${BACKUP_PASSWORD}&new_password_confirm=${BACKUP_PASSWORD}&ok=Change+Password")
 fi
 
 }
@@ -1250,6 +1347,7 @@ local CURL
 local CURL_2
 local CURL_3
 local ARG3=$3
+local CURL_RET_CODE
 
 
 while true
@@ -1270,9 +1368,25 @@ do
 	do
 		
 		if [[ "$1" =~ fe80 ]]; then
-			CURL=$(curl -k $SILENT_CURL -6 --interface "$NETWORK_INTERFACE" -u "${USERNAME}":"${ACTIVE_PASSWORD}" --max-time 1800 --connect-timeout 3 "$4" "$5" "$1")
+			CURL=$(curl $CURL_CA_IGNORE $SILENT_CURL -6 --interface "$NETWORK_INTERFACE" -u "${USERNAME}":"${ACTIVE_PASSWORD}" --max-time 1800 --connect-timeout 3 "$4" "$5" "$1")
 		else
-			CURL=$(curl -k $SILENT_CURL -u "${USERNAME}":"${ACTIVE_PASSWORD}" --max-time 1800 --connect-timeout 3 "$4" "$5" "$1")
+			CURL=$(curl $CURL_CA_IGNORE $SILENT_CURL -u "${USERNAME}":"${ACTIVE_PASSWORD}" --max-time 1800 --connect-timeout 3 "$4" "$5" "$1")
+		fi
+		
+		CURL_RET_CODE=$?
+		
+		# Catch vm capacity license reboot
+		
+		if (( CURL_RET_CODE == 52 )) && [[ "$1" =~ type\=import\&category\=license ]]; then
+			date +"%T WARNING: VM rebooting due to capacity license uploaded" >&2
+			return 2
+		fi
+		
+		# Catch TLS errors
+		
+		if (( CURL_RET_CODE == 60 )); then
+			date +"%T TLS certificate error." >&2
+			return 1
 		fi
 		
 		# Response must be a valid API response. If rebooting, we sometimes receive random API errors or plain HTML.
@@ -1452,15 +1566,23 @@ do
 		return 0
 	elif [[ "$AUTOCOM_STATUS" =~ "FAIL" ]] && (( NON_INTERACTIVE == 1 )); then
 		# The autocommit failed for whatever reason (could be OKOKFAILOKOK so use regex)
-		FAILURE_REASON=$(echo "$RESPONSE" | xmlstarlet sel -t -m "/response/result/job[type='AutoCom']" -v details 2>/dev/null)
-		echo "Autocommit is failing after reboot. Exiting due to running in non-interactive mode. Failure reason:" >&2
+		FAILURE_REASON=$(echo "$RAW_RESPONSE" | xmlstarlet sel -t -m "/response/result/job[type='AutoCom']" -n -v details 2>/dev/null)
+		echo "Autocommit is failing with reason:" >&2
 		echo "$FAILURE_REASON" >&2
-		return 1
+		if (( IGNORE_ERRORS == 1 )); then
+			echo "Attempting to continue the activity due to -i flag" >&2
+			JUST_REBOOTED=0
+			return 0
+		else
+			echo "Exiting due to running in non-interactive mode and -i flag not set." >&2
+			return 1
+		fi
 	elif [[ "$AUTOCOM_STATUS" =~ "FAIL" ]]; then
-		FAILURE_REASON=$(echo "$RAW_RESPONSE" | xmlstarlet sel -t -m "/response/result/job[type='AutoCom']" -v details 2>/dev/null)
-		echo "The autocommit is failing after reboot. Failure reason:" >&2
+		FAILURE_REASON=$(echo "$RAW_RESPONSE" | xmlstarlet sel -t -m "/response/result/job[type='AutoCom']" -n -v details 2>/dev/null)
+		echo "The autocommit is failing. Failure reason:" >&2
 		beepbeep
 		echo "$FAILURE_REASON" >&2
+		if (( IGNORE_ERRORS == 1 )); then { echo "Attempting to continue the activity due to -i flag" >&2; JUST_REBOOTED=0; return 0; }; fi
 		echo "Continue the activity anyway?" >&2
 		while true; do
 			read yn
@@ -1538,6 +1660,327 @@ fi
 }
 
 ##########################################################################################################################################################################################
+# Uploads and installs Antivirus packages
+##########################################################################################################################################################################################
+
+upgradeAntivirus(){
+	
+	if (( DRY_RUN == 1 )); then
+		
+		FILE_PATH=$(find "$SOFTWARE_FOLDER" -name "$1")
+		if [[ "$FILE_PATH" == "" ]]; then
+			date +"%T Antivirus file $1 not found. Exiting..." >&2
+			return 1
+		fi
+		date +"%T Would upload and install $FILE_PATH now" >&2
+		return 0
+	fi
+	
+	FILE_PATH=$(find "$SOFTWARE_FOLDER" -name "$1")
+	
+	if [[ "$FILE_PATH" == "" ]]; then
+		date +"%T Image file $1 not found. Exiting..." >&2
+		return 1
+	fi
+	
+	# Proceed with uploading the file
+	
+	checkAutoCom "$FIREWALL_ADDRESS" || return 1
+	
+	local RESULT_CUPLOAD_1
+	RESULT_CUPLOAD_1=$(curler "https://${FIREWALL_ADDRESS}/api/?type=op&cmd=<show><system><info></info></system></show>" "/response/@status" 10) || return 1
+	
+	if [[ "$RESULT_CUPLOAD_1" != "success" ]]; then
+		date +"%T Firewall not up while preparing to upload antivirus. Exiting..." >&2
+		return 1
+	fi
+	
+	date +"%T Firewall at ${FIREWALL_ADDRESS} is now up. Uploading antivirus..." >&2
+	
+	local RESULT_CUPLOAD_2
+	SILENT_CURL=""
+	RESULT_CUPLOAD_2=$(curler "https://${FIREWALL_ADDRESS}/api/?type=import&category=anti-virus" "/response/@status" 300 "-F" "file=@${FILE_PATH}") || { SILENT_CURL="-s"; return 1; }
+	SILENT_CURL="-s"
+	
+	# Proceed with installing the file
+	
+	if (( DRY_RUN == 1 )); then
+		date +"%T Would install $1 now" >&2
+		return 0
+	fi
+	
+	local JOB_ID_AV
+	
+	JOB_ID_AV=$(curler "https://${FIREWALL_ADDRESS}/api/?type=op&cmd=<request><anti-virus><upgrade><install><file>$1</file></install></upgrade></anti-virus></request>" "/response/result/job" 30) || return 1
+	
+	date +"%T Installing antivirus $1 on device ${FIREWALL_ADDRESS}. Job ID is ${JOB_ID_AV}." >&2
+	
+	local t
+	t=0
+	local JOB_STATUS_AV
+	local JOB_STATUS_AV_RESULT
+	local JOB_STATUS_AV_MSG
+	local JOB_STATUS_AV_PROGRESS
+	local JOB_STATUS_AV_PROGRESS_1
+	JOB_STATUS_AV=$(curler "https://${FIREWALL_ADDRESS}/api/?type=op&cmd=<show><jobs><id>${JOB_ID_AV}</id></jobs></show>" " " 10 " " " " "raw") || return 1
+	JOB_STATUS_AV_RESULT=$(echo "$JOB_STATUS_AV" | xmlstarlet sel -t -v "/response/result/job/result" 2>/dev/null)
+	while [[ "$JOB_STATUS_AV_RESULT" != "OK" ]];
+	do
+		if [[ "$JOB_STATUS_AV_RESULT" == "FAIL" ]]; then
+			JOB_STATUS_AV_MSG=$(echo "$JOB_STATUS_AV" | xmlstarlet sel -t -v "/response/result/job/details/line" 2>/dev/null)
+			date +"%T Antivirus $1 installation failed with reason: \"${JOB_STATUS_AV_MSG}\". Exiting..." >&2
+			return 1
+		fi
+		((t++))
+		sleep 5
+		if (( t > 90 )); then
+			date +"%T Firewall ${FIREWALL_ADDRESS} antivirus $1 installation not complete after 15 minutes. Exiting..." >&2
+			return 1
+		fi
+		JOB_STATUS_AV=$(curler "https://${FIREWALL_ADDRESS}/api/?type=op&cmd=<show><jobs><id>${JOB_ID_AV}</id></jobs></show>" " " 10 " " " " "raw") || return 1
+		JOB_STATUS_AV_RESULT=$(echo "$JOB_STATUS_AV" | xmlstarlet sel -t -v "/response/result/job/result" 2>/dev/null)
+		JOB_STATUS_AV_PROGRESS=$(echo "$JOB_STATUS_AV" | xmlstarlet sel -t -v "/response/result/job/progress" 2>/dev/null)
+		if [[ "$JOB_STATUS_AV_PROGRESS" != "$JOB_STATUS_AV_PROGRESS_1" ]]; then
+			if [[ "$JOB_STATUS_AV_PROGRESS" =~ ^[0-9]+$ ]]; then
+				date +"%T Firewall ${FIREWALL_ADDRESS} antivirus installation is $JOB_STATUS_AV_PROGRESS percent complete." >&2
+				JOB_STATUS_AV_PROGRESS_1="$JOB_STATUS_AV_PROGRESS"
+			elif [[ "$JOB_STATUS_AV_PROGRESS" =~ ^[0-9\:]+$ ]]; then
+				date +"%T Firewall ${FIREWALL_ADDRESS} antivirus installation completed." >&2
+				JOB_STATUS_AV_PROGRESS_1="$JOB_STATUS_AV_PROGRESS"
+			fi
+		fi
+	done
+	
+}
+
+
+##########################################################################################################################################################################################
+# Uploads license files
+##########################################################################################################################################################################################
+
+uploadLicenses(){
+	
+	# The function takes a serial number as argument and the second argument can optionally limit the upload to vm capacity license
+	# License file format is $SERIAL-licensename.key
+	
+	local VM_REBOOTED=0
+	local VM_REBOOT_RESULT
+	
+	# Results to array
+	
+	readarray -d '' licensearray < <(find "$SOFTWARE_FOLDER" -name "${1}-*.key" -print0)
+	
+	if (( ${#licensearray[@]} == 0 )); then
+		date +"%T No license files with format \"${1}-*.key\" found. Exiting..." >&2
+		return 1
+	fi	
+	
+	if (( DRY_RUN == 1 )); then
+		
+		date +"%T Would upload licenses:" >&2
+		printf '%s\n' "${licensearray[@]}"
+		return 0
+	fi
+	
+	# Proceed with uploading the files
+	
+	checkAutoCom "$FIREWALL_ADDRESS" || return 1
+	
+	local RESULT_CUPLOAD_1
+	RESULT_CUPLOAD_1=$(curler "https://${FIREWALL_ADDRESS}/api/?type=op&cmd=<show><system><info></info></system></show>" "/response/@status" 10) || return 1
+	
+	if [[ "$RESULT_CUPLOAD_1" != "success" ]]; then
+		date +"%T Firewall not up while preparing to upload licenses. Exiting..." >&2
+		return 1
+	fi
+	
+	date +"%T Firewall at ${FIREWALL_ADDRESS} is now up. Uploading licenses..." >&2
+	
+	local RESULT_CUPLOAD_2
+	SILENT_CURL=""
+	for i in "${licensearray[@]}"
+	do
+		if [[ "$2" == "vm_capacity_only" ]] && ! [[ "$i" =~ pa\-vm\.key ]]; then
+			# Only install vm capacity license
+			continue
+		fi
+		RESULT_CUPLOAD_2=$(curler "https://${FIREWALL_ADDRESS}/api/?type=import&category=license" "/response/@status" 300 "-F" "file=@${i}") || { if (( $? == 2 )); then VM_REBOOTED=1; else SILENT_CURL="-s"; return 1; fi; }
+		if (( VM_REBOOTED == 1 )); then
+			SILENT_CURL="-s"
+			date +"%T The VM is rebooting to apply the capacity license. If hardware requirements are not met, the VM may enter maintenance mode."
+			date +"%T Waiting up to 15 minutes for the reboot to complete."
+			sleep 240
+			VM_REBOOT_RESULT=$(curler "https://${FIREWALL_ADDRESS}/api/?type=op&cmd=<show><system><info></info></system></show>" "/response/@status" 660) || endbeep
+			if [[ "$VM_REBOOT_RESULT" != "success" ]]; then
+				date +"%T VM capacity upgrade unsuccessful. Exiting..."
+				return 1
+			else
+				sleep 10
+				checkAutoCom "$FIREWALL_ADDRESS" || return 1
+				date +"%T VM capacity upgrade complete. Uploading the remaining licenses."
+			fi
+		fi
+		date +"%T Successfully uploaded license ${i}"
+		sleep 1
+	done
+	
+	SILENT_CURL="-s"
+	
+}
+
+##########################################################################################################################################################################################
+# Upload and load config
+##########################################################################################################################################################################################
+
+loadConfig(){
+	
+	# The function takes a serial number as argument
+	# Config file format is $SERIAL-config.xml
+	
+	FILE_PATH=$(find "$SOFTWARE_FOLDER" -name "${1}-config.xml")
+	if [[ "$FILE_PATH" == "" ]]; then
+		date +"%T No config file with format \"${1}-config.xml\" found. Exiting..." >&2
+		return 1
+	fi
+	
+	if (( DRY_RUN == 1 )); then
+		date +"%T Would upload config file $FILE_PATH now" >&2
+		return 0
+	fi
+	
+	# Proceed with uploading the files
+	
+	checkAutoCom "$FIREWALL_ADDRESS" || return 1
+	
+	local RESULT_CUPLOAD_1
+	RESULT_CUPLOAD_1=$(curler "https://${FIREWALL_ADDRESS}/api/?type=op&cmd=<show><system><info></info></system></show>" "/response/@status" 10) || return 1
+	
+	if [[ "$RESULT_CUPLOAD_1" != "success" ]]; then
+		date +"%T Firewall not up while preparing to upload config. Exiting..." >&2
+		return 1
+	fi
+	
+	date +"%T Firewall at ${FIREWALL_ADDRESS} is now up. Uploading config..." >&2
+	
+	local RESULT_CUPLOAD_2
+	SILENT_CURL=""
+	RESULT_CUPLOAD_2=$(curler "https://${FIREWALL_ADDRESS}/api/?type=import&category=configuration" "/response/@status" 300 "-F" "file=@${FILE_PATH}") || { SILENT_CURL="-s"; return 1; }
+	SILENT_CURL="-s"
+	
+	# Try to load it
+	
+	local RESULT_CUPLOAD_3
+	RESULT_CUPLOAD_3=$(curler "https://${FIREWALL_ADDRESS}/api/?type=op&cmd=<load><config><from>${1}-config.xml</from></config></load>"  "/response/@status" 10) || return 1
+	
+	if [[ "$RESULT_CUPLOAD_3" != "success" ]]; then
+		date +"%T Error loading config ${1}-config.xml to candidate on the firewall. Exiting..." >&2
+		return 1
+	fi
+	
+	date +"%T Config ${1}-config.xml successfully loaded to candidate on the firewall." >&2
+	
+	# Return config file for diffing
+	
+	echo "$FILE_PATH"
+	
+}
+
+##########################################################################################################################################################################################
+# Commits
+##########################################################################################################################################################################################
+
+commit(){
+	
+	if (( DRY_RUN == 1 )); then
+		date +"%T Would commit the configuration now" >&2
+		return 0
+	fi
+	
+	local JOB_ID_COMMIT
+	
+	JOB_ID_COMMIT=$(curler "https://${FIREWALL_ADDRESS}/api/?type=commit&cmd=<commit></commit>" "/response/result/job" 30) || return 1
+		
+	date +"%T Committing on device ${FIREWALL_ADDRESS}. Job ID is ${JOB_ID_COMMIT}." >&2
+	
+	local t
+	t=0
+	local JOB_STATUS_COMMIT
+	local JOB_STATUS_COMMIT_RESULT
+	local JOB_STATUS_COMMIT_MSG
+	local JOB_STATUS_COMMIT_PROGRESS
+	local JOB_STATUS_COMMIT_PROGRESS_1
+	JOB_STATUS_COMMIT=$(curler "https://${FIREWALL_ADDRESS}/api/?type=op&cmd=<show><jobs><id>${JOB_ID_COMMIT}</id></jobs></show>" " " 10 " " " " "raw") || return 1
+	JOB_STATUS_COMMIT_RESULT=$(echo "$JOB_STATUS_COMMIT" | xmlstarlet sel -t -v "/response/result/job/result" 2>/dev/null)
+	while [[ "$JOB_STATUS_COMMIT_RESULT" != "OK" ]];
+	do
+		if [[ "$JOB_STATUS_COMMIT_RESULT" == "FAIL" ]]; then
+			JOB_STATUS_COMMIT_MSG=$(echo "$JOB_STATUS_COMMIT" | xmlstarlet sel -t -v "/response/result/job/details/line" 2>/dev/null)
+			date +"%T Commit failed with reason: \"${JOB_STATUS_COMMIT_MSG}\". Exiting..." >&2
+			return 1
+		fi
+		((t++))
+		sleep 5
+		if (( t > 90 )); then
+			date +"%T Firewall ${FIREWALL_ADDRESS} commit not complete after 15 minutes. Exiting..." >&2
+			return 1
+		fi
+		JOB_STATUS_COMMIT=$(curler "https://${FIREWALL_ADDRESS}/api/?type=op&cmd=<show><jobs><id>${JOB_ID_COMMIT}</id></jobs></show>" " " 10 " " " " "raw") || return 1
+		JOB_STATUS_COMMIT_RESULT=$(echo "$JOB_STATUS_COMMIT" | xmlstarlet sel -t -v "/response/result/job/result" 2>/dev/null)
+		JOB_STATUS_COMMIT_PROGRESS=$(echo "$JOB_STATUS_COMMIT" | xmlstarlet sel -t -v "/response/result/job/progress" 2>/dev/null)
+		if [[ "$JOB_STATUS_COMMIT_PROGRESS" != "$JOB_STATUS_COMMIT_PROGRESS_1" ]]; then
+			if [[ "$JOB_STATUS_COMMIT_PROGRESS" =~ ^[0-9]+$ ]]; then
+				date +"%T Firewall ${FIREWALL_ADDRESS} commit is $JOB_STATUS_COMMIT_PROGRESS percent complete." >&2
+				JOB_STATUS_COMMIT_PROGRESS_1="$JOB_STATUS_COMMIT_PROGRESS"
+			elif [[ "$JOB_STATUS_COMMIT_PROGRESS" =~ ^[0-9\:]+$ ]]; then
+				date +"%T Firewall ${FIREWALL_ADDRESS} commit completed." >&2
+				JOB_STATUS_COMMIT_PROGRESS_1="$JOB_STATUS_COMMIT_PROGRESS"
+			fi
+		fi
+	done
+	
+}
+
+##########################################################################################################################################################################################
+# Checks for crashes on the firewall
+##########################################################################################################################################################################################
+
+healthChecks(){
+	
+	local SUCCESS_STREAK
+	SUCCESS_STREAK=0
+	
+	date +"%T Checking process status on device ${FIREWALL_ADDRESS}..." >&2
+	
+	for i in {1..20};
+	do
+		unset SOFTWARE_STATUS
+		
+		if (( SUCCESS_STREAK > 4 )); then
+			date +"%T All firewall processes are now running correctly." >&2
+			return 0
+		fi
+		
+		SOFTWARE_STATUS=$(curler "https://${FIREWALL_ADDRESS}/api/?type=op&cmd=<show><system><software><status></status></software></system></show>" "/response/result" 10) || return 1
+		# Check for not running
+		SOFTWARE_STATUS=$(echo "$SOFTWARE_STATUS" | grep -E '(Process|Group)')
+		SOFTWARE_STATUS=$(echo "$SOFTWARE_STATUS" | grep -v "running")
+		
+		if [[ "$SOFTWARE_STATUS" == "" ]]; then
+			(( SUCCESS_STREAK++ ))
+		else
+			SUCCESS_STREAK=0
+			date +"%T WARNING: found processes not running on ${FIREWALL_ADDRESS} (checking again in 1 seconds):" >&2
+			date +"%T ${SOFTWARE_STATUS}" >&2
+		fi
+		sleep 1
+	done
+	
+	date +"%T ERROR: some processes not up after 20 seconds." >&2
+	return 1
+	
+}
+
+##########################################################################################################################################################################################
 # Main script
 ##########################################################################################################################################################################################
 
@@ -1582,6 +2025,13 @@ if (( NON_INTERACTIVE == 1 )); then
 	SOFTWARE_FOLDER="$4"
 	DESIRED_VERSION="$5"
 	NETWORK_INTERFACE="$6"
+	
+	# Check that optargs were passed to the script
+	
+	if (( INSTALL_THREATS == 1 )) && [[ "$THREAT_FILENAME" == "" ]]; then { echo "Threat file name was not passed to the script. Exiting..."; endbeep; }; fi
+	if (( INSTALL_THREATS == 1 )) && [[ "$ANTIVIRUS_FILENAME" == "" ]]; then { echo "Antivirus file name was not passed to the script. Exiting..."; endbeep; }; fi
+	if (( SET_PRA_AUTHKEY == 1 )) && [[ "$PANORAMA_AUTHKEY" == "" ]]; then { echo "Panorama authkey was not passed to the script. Exiting..."; endbeep; }; fi
+	
 	if [[ "$7" != "" ]]; then { echo "Too many arguments. Exiting..."; endbeep; }; fi
 	
 	if (( BATCH_MODE != 1 )); then
@@ -1594,6 +2044,12 @@ if (( NON_INTERACTIVE == 1 )); then
 			fi
 		fi
 	fi
+	
+	if (( INSTALL_CONFIG == 1 )); then
+		echo "########### WARNING ###########"
+		echo "You have selected to commit a custom configuration file after the upgrade."
+	fi
+	
 else
 	if (( BATCH_MODE != 1 )); then
 		
@@ -1662,6 +2118,30 @@ else
 		echo "Enter the filename of the content file to install, otherwise press ENTER:"
 		read -r EASY_CONTENT
 	fi
+	
+	if (( INSTALL_THREATS == 1 )); then
+		# The values can also come from getopts
+		if [[ "$THREAT_FILENAME" == "" ]]; then
+			echo "Enter the App&Threat file name that will be installed at the end of the upgrade procedure:"
+			read -r THREAT_FILENAME
+		fi
+		if [[ "$ANTIVIRUS_FILENAME" == "" ]]; then
+			echo "Enter the Antivirus file name that will be installed at the end of the upgrade procedure:"
+			read -r ANTIVIRUS_FILENAME
+		fi
+	fi
+	
+	if (( SET_PRA_AUTHKEY == 1 )) && [[ "$PANORAMA_AUTHKEY" == "" ]]; then
+		echo "Enter the Panorama authkey that will be set on the firewalls:"
+		read -r PANORAMA_AUTHKEY
+	fi
+	
+	if (( INSTALL_CONFIG == 1 )); then
+		echo "########### WARNING ###########"
+		echo "You have selected to commit a custom configuration file after the upgrade. Press ENTER to confirm:"
+		read
+	fi
+		
 fi
 
 TIME_START=$(date "+%s")
@@ -1779,14 +2259,20 @@ if (( BATCH_MODE == 1 )); then
 	SERIAL_ARRAY=()
 	STATUS_ARRAY=()
 	
-	FLAG_1=""
-	FLAG_2=""
-	if (( SHUTDOWN == 1 )); then
-		FLAG_1="-s"
-	fi
-	if (( DRY_RUN == 1 )); then
-		FLAG_2="-d"
-	fi
+	MAIN_OPTS="-lz"
+	
+	# Append the optional features
+	
+	if (( SHUTDOWN == 1 )); then MAIN_OPTS="${MAIN_OPTS}s"; fi
+	if (( DRY_RUN == 1 )); then MAIN_OPTS="${MAIN_OPTS}d"; fi
+	if (( UPLOAD_LICENSES == 1 )); then MAIN_OPTS="${MAIN_OPTS}k"; fi
+	if (( INSTALL_CONFIG == 1 )); then MAIN_OPTS="${MAIN_OPTS}c"; fi
+	if [[ "$CURL_CA_IGNORE" == "" ]]; then MAIN_OPTS="${MAIN_OPTS}q"; fi
+	if (( IGNORE_ERRORS == 1 )); then MAIN_OPTS="${MAIN_OPTS}i"; fi
+	
+	EXTRA_OPTS=()
+	if (( SET_PRA_AUTHKEY == 1 )); then EXTRA_OPTS+=("-p $PANORAMA_AUTHKEY "); fi
+	if (( INSTALL_THREATS == 1 )); then EXTRA_OPTS+=("-t $THREAT_FILENAME "); EXTRA_OPTS+=("-a $ANTIVIRUS_FILENAME "); fi
 	
 	# Bootstrap loop
 	
@@ -1819,7 +2305,7 @@ if (( BATCH_MODE == 1 )); then
 		
 		# Launch the actual upgrade
 		
-		("$0" -l -z $FLAG_1 $FLAG_2 "[""$i""]" "$USERNAME" "$ACTIVE_PASSWORD" "$SOFTWARE_FOLDER" "$DESIRED_VERSION" "$NETWORK_INTERFACE" > "${SERIAL_1}.log" 2>&1 &)
+		("$0" ${EXTRA_OPTS[@]} "$MAIN_OPTS" "[""$i""]" "$USERNAME" "$ACTIVE_PASSWORD" "$SOFTWARE_FOLDER" "$DESIRED_VERSION" "$NETWORK_INTERFACE" > "${SERIAL_1}.log" 2>&1 &)
 		
 		STATUS_ARRAY+=( "ACTIVE" )
 		
@@ -2010,6 +2496,33 @@ PLATFORM=$(curler "https://${FIREWALL_ADDRESS}/api/?type=op&cmd=<show><system><i
 
 CURRENT_VERSION=$(curler "https://${FIREWALL_ADDRESS}/api/?type=op&cmd=<show><system><info></info></system></show>" "/response/result/system/sw-version" 10) || endbeep
 
+# Get serial number
+
+SERIAL_NUMBER=$(curler "https://${FIREWALL_ADDRESS}/api/?type=op&cmd=<show><system><info></info></system></show>" "/response/result/system/serial" 10) || endbeep
+
+# Check if version is supported
+
+if (( EASY != 1 )); then
+	versionPresent "$PLATFORM".csv "$DESIRED_VERSION" || endbeep
+fi
+
+# Serial must be valid for the following modes
+
+if (( UPLOAD_LICENSES == 1 || INSTALL_CONFIG == 1 )) && [[ "$SERIAL_NUMBER" == "unknown" ]]; then
+	if (( NON_INTERACTIVE == 1 )); then
+		date +"%T ERROR: serial is unknown (unprovisioned VM?) and mode is non-interactive. Exiting..."
+		endbeep
+	else
+		date +"Serial number is unknown (unprovisioned VM?). Please input the serial number associated with the license/config files and press ENTER:"
+		read -r SERIAL_NUMBER
+		if [[ "$PLATFORM" == "vm" ]]; then
+			date +"%T The VM needs a capacity license for the upgrade. Attempting to install it..."
+			# Limit install to vm capacity license
+			uploadLicenses "$SERIAL_NUMBER" "vm_capacity_only" || endbeep
+		fi
+	fi
+fi
+
 ###################################################################
 # Easy mode loop
 ###################################################################
@@ -2041,6 +2554,7 @@ if (( EASY == 1 )); then
 			CURRENT_VERSION=$(curler "https://${FIREWALL_ADDRESS}/api/?type=op&cmd=<show><system><info></info></system></show>" "/response/result/system/sw-version" 3600) || endbeep
 			MAJOR_CUR="$CURRENT_VERSION"
 			checkAutoCom "$FIREWALL_ADDRESS" || endbeep
+			healthChecks || { date +"%T --- ERROR --- Detected process errors on the firewall. Exiting..."; if (( IGNORE_ERRORS == 0 )); then endbeep; fi; }
 			if [[ "$CURRENT_VERSION" != "" ]]; then
 				JUST_REBOOTED=0
 				beep
@@ -2063,6 +2577,7 @@ if (( EASY == 1 )); then
 		# Wait for final bootup
 		CURRENT_VERSION=$(curler "https://${FIREWALL_ADDRESS}/api/?type=op&cmd=<show><system><info></info></system></show>" "/response/result/system/sw-version" 3600) || endbeep
 		checkAutoCom "$FIREWALL_ADDRESS" || endbeep
+		healthChecks || { date +"%T --- ERROR --- Detected process errors on the firewall. Use the -i flag to ignore."; if (( IGNORE_ERRORS == 0 )); then endbeep; fi; }
 		if [[ "$CURRENT_VERSION" != "" ]]; then
 			JUST_REBOOTED=0
 			beep
@@ -2073,7 +2588,51 @@ if (( EASY == 1 )); then
 		fi
 	fi
 	
-	date +"%T Successfully brought ${FIREWALL_ADDRESS} to version ${CURRENT_VERSION}. Exiting..."
+	date +"%T Successfully brought ${FIREWALL_ADDRESS} to version ${CURRENT_VERSION}."
+	
+	if (( UPLOAD_LICENSES == 1 )); then
+		date +"%T Uploading licenses on ${FIREWALL_ADDRESS}"
+		uploadLicenses "$SERIAL_NUMBER" || endbeep
+	fi
+	
+	if (( INSTALL_THREATS == 1 )); then
+		date +"%T Installing content $THREAT_FILENAME on ${FIREWALL_ADDRESS}"
+		upgradeEasyContent "$THREAT_FILENAME" || endbeep
+		
+		date +"%T Installing antivirus $ANTIVIRUS_FILENAME on ${FIREWALL_ADDRESS}"
+		upgradeAntivirus "$ANTIVIRUS_FILENAME" || endbeep
+	fi
+	
+	if (( SET_PRA_AUTHKEY == 1 )); then
+		if (( DRY_RUN == 1 )); then
+			date +"%T Would set Panorama authkey ${PANORAMA_AUTHKEY} on ${FIREWALL_ADDRESS} now"
+		else
+			date +"%T Setting Panorama authkey ${PANORAMA_AUTHKEY} on ${FIREWALL_ADDRESS}"
+			curler "https://${FIREWALL_ADDRESS}/api/?type=op&cmd=<request><authkey><set>${PANORAMA_AUTHKEY}</set></authkey></request>" "/response/@status" 10 || endbeep
+		fi
+	fi
+	
+	if (( INSTALL_CONFIG == 1 )); then
+		date +"%T Uploading config on ${FIREWALL_ADDRESS}"
+		CONFIG_FILE=$(loadConfig "$SERIAL_NUMBER") || endbeep
+		date +"%T Config loaded successfully. Committing..."
+		sleep 5
+		commit || { echo "WARNING: communication with the firewall lost after commit. Exiting..."; endbeep; }
+		date +"%T Config committed successfully. Running diff between source file and new running config. Ideally this should be empty."
+		NEW_RUNNING_CONFIG=$(curler "https://${FIREWALL_ADDRESS}/api/?type=config&action=show" " " 120 " " " " "raw") || endbeep
+		date +"%T ################ SOURCE FILE VS RUNNING CONFIG DIFF ################"
+		if (( DRY_RUN != 1 )); then diff "$CONFIG_FILE" <(echo "$NEW_RUNNING_CONFIG"); else echo "DRY RUN"; fi
+		date +"%T #############################################################"
+		# Free the memory
+		unset NEW_RUNNING_CONFIG
+		# Print show system info
+		date +"%T ##################### SHOW SYSTEM INFO ######################"
+		curler "https://${FIREWALL_ADDRESS}/api/?type=op&cmd=<show><system><info></info></system></show>" " " 10 " " " " "raw" || endbeep
+		date +"%T #############################################################"
+	fi
+	
+	healthChecks || { date +"%T --- ERROR --- Detected process errors on the firewall. Use the -i flag to ignore."; if (( IGNORE_ERRORS == 0 )); then endbeep; fi; }
+	
 	if (( SHUTDOWN == 1 )); then
 		date +"%T Shutting down firewall ${FIREWALL_ADDRESS}"
 		shutdownSystem || endbeep
@@ -2089,12 +2648,48 @@ fi
 
 ###################################################################
 
-# Check if version is supported
-
-versionPresent "$PLATFORM".csv "$DESIRED_VERSION" || endbeep
-
 if [[ "$CURRENT_VERSION" == "$DESIRED_VERSION" ]]; then
-	date +"%T The required version is already installed. Exiting..."
+	date +"%T The required version is already installed."
+	if (( UPLOAD_LICENSES == 1 )); then
+		date +"%T Uploading licenses on ${FIREWALL_ADDRESS}"
+		uploadLicenses "$SERIAL_NUMBER" || endbeep
+	fi
+	if (( INSTALL_THREATS == 1 )); then
+		date +"%T Installing content $THREAT_FILENAME on ${FIREWALL_ADDRESS}"
+		upgradeEasyContent "$THREAT_FILENAME" || endbeep
+		
+		date +"%T Installing antivirus $ANTIVIRUS_FILENAME on ${FIREWALL_ADDRESS}"
+		upgradeAntivirus "$ANTIVIRUS_FILENAME" || endbeep
+	fi
+	if (( SET_PRA_AUTHKEY == 1 )); then
+		if (( DRY_RUN == 1 )); then
+			date +"%T Would set Panorama authkey ${PANORAMA_AUTHKEY} on ${FIREWALL_ADDRESS} now"
+		else
+			date +"%T Setting Panorama authkey ${PANORAMA_AUTHKEY} on ${FIREWALL_ADDRESS}"
+			curler "https://${FIREWALL_ADDRESS}/api/?type=op&cmd=<request><authkey><set>${PANORAMA_AUTHKEY}</set></authkey></request>" "/response/@status" 10 || endbeep
+		fi
+	fi
+	if (( INSTALL_CONFIG == 1 )); then
+		date +"%T Uploading config on ${FIREWALL_ADDRESS}"
+		CONFIG_FILE=$(loadConfig "$SERIAL_NUMBER") || endbeep
+		date +"%T Config loaded successfully. Committing..."
+		sleep 5
+		commit || { echo "WARNING: communication with the firewall lost after commit. Exiting..."; endbeep; }
+		date +"%T Config committed successfully. Running diff between source file and new running config. Ideally this should be empty."
+		NEW_RUNNING_CONFIG=$(curler "https://${FIREWALL_ADDRESS}/api/?type=config&action=show" " " 120 " " " " "raw") || endbeep
+		date +"%T ################ SOURCE FILE VS RUNNING CONFIG DIFF ################"
+		if (( DRY_RUN != 1 )); then diff "$CONFIG_FILE" <(echo "$NEW_RUNNING_CONFIG"); else echo "DRY RUN"; fi
+		date +"%T #############################################################"
+		# Free the memory
+		unset NEW_RUNNING_CONFIG
+		# Print show system info
+		date +"%T ##################### SHOW SYSTEM INFO ######################"
+		curler "https://${FIREWALL_ADDRESS}/api/?type=op&cmd=<show><system><info></info></system></show>" " " 10 " " " " "raw" || endbeep
+		date +"%T #############################################################"
+	fi
+	
+	healthChecks || { date +"%T --- ERROR --- Detected process errors on the firewall. Use the -i flag to ignore."; if (( IGNORE_ERRORS == 0 )); then endbeep; fi; }
+	
 	if (( SHUTDOWN == 1 )); then
 		date +"%T Shutting down firewall ${FIREWALL_ADDRESS}"
 		shutdownSystem || endbeep
@@ -2144,6 +2739,7 @@ do
 		if (( JUST_REBOOTED == 1 )); then
 			CURRENT_VERSION=$(curler "https://${FIREWALL_ADDRESS}/api/?type=op&cmd=<show><system><info></info></system></show>" "/response/result/system/sw-version" 3600) || endbeep
 			checkAutoCom "$FIREWALL_ADDRESS" || endbeep
+			healthChecks || { date +"%T --- ERROR --- Detected process errors on the firewall. Use the -i flag to ignore."; if (( IGNORE_ERRORS == 0 )); then endbeep; fi; }
 			if [[ "$CURRENT_VERSION" != "" ]]; then
 				JUST_REBOOTED=0
 				beep
@@ -2158,7 +2754,51 @@ do
 	
 	date +"%T Current version: ${CURRENT_VERSION}, target version: ${DESIRED_VERSION}"
 	if [[ "$CURRENT_VERSION" == "$DESIRED_VERSION" ]]; then
-		date +"%T Successfully ${ACTIVITY}d ${FIREWALL_ADDRESS} to version ${DESIRED_VERSION}. Exiting..."
+		date +"%T Successfully ${ACTIVITY}d ${FIREWALL_ADDRESS} to version ${DESIRED_VERSION}."
+		
+		if (( UPLOAD_LICENSES == 1 )); then
+			date +"%T Uploading licenses on ${FIREWALL_ADDRESS}"
+			uploadLicenses "$SERIAL_NUMBER" || endbeep
+		fi
+		
+		if (( INSTALL_THREATS == 1 )); then
+			date +"%T Installing content $THREAT_FILENAME on ${FIREWALL_ADDRESS}"
+			upgradeEasyContent "$THREAT_FILENAME" || endbeep
+			
+			date +"%T Installing antivirus $ANTIVIRUS_FILENAME on ${FIREWALL_ADDRESS}"
+			upgradeAntivirus "$ANTIVIRUS_FILENAME" || endbeep
+		fi
+		
+		if (( SET_PRA_AUTHKEY == 1 )); then
+			if (( DRY_RUN == 1 )); then
+				date +"%T Would set Panorama authkey ${PANORAMA_AUTHKEY} on ${FIREWALL_ADDRESS} now"
+			else
+				date +"%T Setting Panorama authkey ${PANORAMA_AUTHKEY} on ${FIREWALL_ADDRESS}"
+				curler "https://${FIREWALL_ADDRESS}/api/?type=op&cmd=<request><authkey><set>${PANORAMA_AUTHKEY}</set></authkey></request>" "/response/@status" 10 || endbeep
+			fi
+		fi
+		
+		if (( INSTALL_CONFIG == 1 )); then
+			date +"%T Uploading config on ${FIREWALL_ADDRESS}"
+			CONFIG_FILE=$(loadConfig "$SERIAL_NUMBER") || endbeep
+			date +"%T Config loaded successfully. Committing..."
+			sleep 5
+			commit || { echo "WARNING: communication with the firewall lost after commit. Exiting..."; endbeep; }
+			date +"%T Config committed successfully. Running diff between source file and new running config. Ideally this should be empty."
+			NEW_RUNNING_CONFIG=$(curler "https://${FIREWALL_ADDRESS}/api/?type=config&action=show" " " 120 " " " " "raw") || endbeep
+			date +"%T ################ SOURCE FILE VS RUNNING CONFIG DIFF ################"
+			if (( DRY_RUN != 1 )); then diff "$CONFIG_FILE" <(echo "$NEW_RUNNING_CONFIG"); else echo "DRY RUN"; fi
+			date +"%T #############################################################"
+			# Free the memory
+			unset NEW_RUNNING_CONFIG
+			# Print show system info
+			date +"%T ##################### SHOW SYSTEM INFO ######################"
+			curler "https://${FIREWALL_ADDRESS}/api/?type=op&cmd=<show><system><info></info></system></show>" " " 10 " " " " "raw" || endbeep
+			date +"%T #############################################################"
+		fi
+		
+		healthChecks || { date +"%T --- ERROR --- Detected process errors on the firewall. Use the -i flag to ignore."; if (( IGNORE_ERRORS == 0 )); then endbeep; fi; }
+		
 		if (( SHUTDOWN == 1 )); then
 			date +"%T Shutting down firewall ${FIREWALL_ADDRESS}"
 			shutdownSystem || endbeep
