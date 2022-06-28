@@ -14,47 +14,95 @@ This shell script is primarily intended as a quick and easy way to upgrade Palo 
 * Develop a simple GUI for the Raspberry Pi + Touchscreen (see [paloversion-gui](https://github.com/o5edaxi/paloversion-gui))
 * (Most importantly) work without an Internet connection or an active support license. **This script works by locating, validating, and uploading the firmware from your computer in a fully automated manner.**
 
+### NEW in v1.4
+
+Threat, config, and license support allows the script to fully prepare a firewall or batch of firewalls for production automatically, without user intervention.
+
+* Automated Threat and Antivirus package installation
+* Per-serial license file upload
+* Panorama authkey setting
+* Per-serial configuration upload and commit with final diffing and "show system info" printout
+* cURL certificate validation
+* Firewall process health check at each upgrade step
+* Batch and EZ mode support for new features
+
 ### Usage
+
+```Usage: paloversion.sh [ -hdsxkcpmiq ] [ -e | -lzf ] [ -t threat_file ] [ -a antivirus_file ] [ -p panorama_authkey ] [ -z fw_address user password files_folder target_version [ network_interface ] ]```
 
 When run in its basic form, the script will ask the user for a firewall IP, a working username and password (with sufficient privileges) for the firewall, the desired version, as well as the top folder where the firmware images are located on the computer. It will then perform the entire upgrade procedure and exit.
 
 **Important:** 2 extra csv files are required, namely one to indicate the details of the software images, and the other to indicate the minimum content version required by each major Pan-OS release. You may construct your own or extract JSON from the support site and run it through the included [Python script](json-extractor.py) to generate it (see **CSV Structure** below for more details). Use **Easy mode** to avoid the need for the csv files.
 
-Use the ```-h``` option to print these instructions to your terminal.
-
 Available options:
+
+```-h	help```
+
+Displays these instructions
 
 ```-d	dry-run```
 
-Prints the necessary operations without performing any action on the firewall.
+Outputs the operations without performing any action on the firewall
 
 ```-s	shutdown```
 
-Shuts down the firewall after performing the upgrades.
-
+Shuts down the firewall after performing the upgrades
+	
 ```-l	lazy```
-
-Skips installing the "latest" patches during upgrades (ie. skip 9.0.10 when going 9.0.0 -> 9.1.0)
-
+	
+Skips installing patches during upgrades (ie. skip 9.0.10 when going 9.0.0 -> 9.1.0)
+	
 ```-e	easy```
-
+	
 Allows the user to list the upgrade steps and files manually, and doesn't check file hashes
-
-```-x  debug```
-
+	
+```-x	debug```
+	
 Bash debug mode
+	
+```-f	factory-batch mode```
+	
+This mode will search for one or more firewalls on the same L2 broadcast domain as the host, and automatically upgrade them by using their IPv6 link-local address
+	
+```-k	licenses```
+	
+Install license files before starting upgrade
+	
+```-t	threats```
+	
+Install App&Threats packages after upgrade (requires -a flag)
+	
+```-a	antivirus```
+	
+Install Antivirus packages after upgrade (requires -t flag)
+	
+```-c	configuration```
+	
+Upload and commit a configuration after upgrade
+	
+```-p	panorama authkey```
+	
+Set a Panorama authkey after upgrade (10.1 and above)
+	
+```-z	non-interactive mode```
+	
+Requires all input as arguments to the script, e.g.:
+paloversion.sh -p "2:12345AUTHKEY" -t "panupv2-all-contents-1234-5678" -a "panup-all-antivirus-1234-5678"  -lzc "192.0.2.1" "admin" "password" "/home/PA/Firmware/" "8.1.15-h3"
 
-```-f  factory-batch mode```
+Arguments are mandatory according to the features selected.
+	
+```-m disable batch mode MAC filter```
+	
+Disable checks for valid Palo Alto MAC addresses, upgrades all firewalls on broadcast domain (requires -f)
+	
+```-q validate firewall certificates```
+	
+Enforces trusted CAs for every HTTPS connection
+	
+```-i ignore autocommit and process errors```
+	
+Autocommit/Process errors during upgrades and downgrades will not stop the activity
 
-This mode will search for one or more firewalls on the same L2 broadcast domain as the host, and automatically upgrade them by using their IPv6 link-local address.
-
-```-z  non-interactive mode```
-
-Allows passing all input as arguments to the script (eg. ./paloversion.sh -l -z "192.0.2.1" "admin" "password" "/home/PA/Firmware/" "9.1.6")
-
-```-m```
-
-Disable checks for valid Palo Alto MAC addresses, attempts to upgrade all devices on the L2 broadcast domain (factory-batch mode only)
 
 ### Requirements
 
@@ -71,6 +119,32 @@ You will be prompted to enter the file names that will be installed in order, se
 ```PanOS_800-9.1.9 R PanOS_800-10.0.0 R PanOS_800-10.1.0 PanOS_800-10.1.4 R```
 
 All filenames must be original as downloaded from the support website to allow the script to extract the version.
+
+### Licenses
+
+License files are searched for recursively in the general firmware folder, and must be in the format $SERIAL_NUMBER-$LICENSE.key as downloaded from the CSP, e.g. "01234567890-support.key".
+Run the script with a target version identical to the current version to quickly install licenses without upgrading.
+Supports multiple firewalls in batch mode by placing one or more license files for each serial number.
+
+### Threat and Antivirus
+
+App&Threat and Anti-Virus packages are searched for recursively in the general firmware folder with the name specified at run time.
+A content file must be set even if the content.csv file already specifies App&Threat packages.
+Run the script with a target version identical to the current version to quickly install packages without upgrading.
+Supports multiple firewalls in batch mode.
+
+### Configuration files
+
+Configuration files are searched for recursively in the general firmware folder, and must be in the format $SERIAL_NUMBER-config.xml, e.g. "01234567890-config.xml".
+Run the script with a target version identical to the current version to quickly install a config file without upgrading.
+Supports multiple firewalls in batch mode by placing a different config file for each serial number (similarly to firewall bootstrapping).
+	
+### Panorama authkeys
+
+The authkey is inserted at run time, and when using batch mode must work for all firewalls in the batch.
+Please note that 88 character authkeys are bugged for firewalls <10.1.3, so it is recommended to target a more recent version if onboarding to Panorama.
+Run the script with a target version identical to the current version to quickly set authkeys without upgrading.
+The script will exit if the firewall refuses the authkey.
 
 ### CSV Structure
 
