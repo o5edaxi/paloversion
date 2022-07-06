@@ -1528,6 +1528,10 @@ do
 		date +"%T Firewall return status unsuccessful" >&2
 		echo "Response:" >&2
 		echo "$CURL" >&2
+		if [[ "$CURL" =~ .*set\ system\ ztp\ disable.* ]]; then
+			echo "ZTP detected" >&2
+			return 3
+		fi
 		return 1
 	else
 		date +"%T Unspecified error in API response. Error:" >&2
@@ -1811,7 +1815,8 @@ uploadLicenses(){
 			date +"%T The VM is rebooting to apply the capacity license. If hardware requirements are not met, the VM may enter maintenance mode."
 			date +"%T Waiting up to 15 minutes for the reboot to complete."
 			sleep 240
-			VM_REBOOT_RESULT=$(curler "https://${FIREWALL_ADDRESS}/api/?type=op&cmd=<show><system><info></info></system></show>" "/response/@status" 660) || endbeep
+			# Use keygen to receive expired password notifications
+			VM_REBOOT_RESULT=$(curler "https://${FIREWALL_ADDRESS}/api/?type=keygen&user=${USERNAME}&password=${ACTIVE_PASSWORD}" "/response/@status" 660) || VM_REBOOT_RESULT=$(curler "https://${FIREWALL_ADDRESS}/api/?type=keygen&user=${USERNAME}&password=${ACTIVE_PASSWORD}" "/response/@status" 660) || endbeep
 			if [[ "$VM_REBOOT_RESULT" != "success" ]]; then
 				date +"%T VM capacity upgrade unsuccessful. Exiting..."
 				return 1
@@ -1899,7 +1904,7 @@ commit(){
 	
 	local JOB_ID_COMMIT
 	
-	JOB_ID_COMMIT=$(curler "https://${FIREWALL_ADDRESS}/api/?type=commit&cmd=<commit></commit>" "/response/result/job" 30) || return 1
+	JOB_ID_COMMIT=$(curler "https://${FIREWALL_ADDRESS}/api/?type=commit&cmd=<commit></commit>" "/response/result/job" 30) || { if (( $? == 3 )); then return 2; else return 1; fi; }
 		
 	date +"%T Committing on device ${FIREWALL_ADDRESS}. Job ID is ${JOB_ID_COMMIT}." >&2
 	
@@ -2270,6 +2275,7 @@ if (( BATCH_MODE == 1 )); then
 	if (( INSTALL_CONFIG == 1 )); then MAIN_OPTS="${MAIN_OPTS}c"; fi
 	if [[ "$CURL_CA_IGNORE" == "" ]]; then MAIN_OPTS="${MAIN_OPTS}q"; fi
 	if (( IGNORE_ERRORS == 1 )); then MAIN_OPTS="${MAIN_OPTS}i"; fi
+	if (( DEBUG == 1 )); then MAIN_OPTS="${MAIN_OPTS}x"; fi
 	
 	EXTRA_OPTS=()
 	if (( SET_PRA_AUTHKEY == 1 )); then EXTRA_OPTS+=("-p $PANORAMA_AUTHKEY "); fi
@@ -2614,22 +2620,62 @@ if (( EASY == 1 )); then
 	fi
 	
 	if (( INSTALL_CONFIG == 1 )); then
-		date +"%T Uploading config on ${FIREWALL_ADDRESS}"
-		CONFIG_FILE=$(loadConfig "$SERIAL_NUMBER") || endbeep
-		date +"%T Config loaded successfully. Committing..."
-		sleep 5
-		commit || { echo "WARNING: communication with the firewall lost after commit. Exiting..."; endbeep; }
-		date +"%T Config committed successfully. Running diff between source file and new running config. Ideally this should be empty."
-		NEW_RUNNING_CONFIG=$(curler "https://${FIREWALL_ADDRESS}/api/?type=config&action=show" " " 120 " " " " "raw") || endbeep
-		date +"%T ################ SOURCE FILE VS RUNNING CONFIG DIFF ################"
-		if (( DRY_RUN != 1 )); then diff "$CONFIG_FILE" <(echo "$NEW_RUNNING_CONFIG"); else echo "DRY RUN"; fi
-		date +"%T #############################################################"
-		# Free the memory
-		unset NEW_RUNNING_CONFIG
-		# Print show system info
-		date +"%T ##################### SHOW SYSTEM INFO ######################"
-		curler "https://${FIREWALL_ADDRESS}/api/?type=op&cmd=<show><system><info></info></system></show>" " " 10 " " " " "raw" || endbeep
-		date +"%T #############################################################"
+		while true
+		do
+			date +"%T Uploading config on ${FIREWALL_ADDRESS}"
+			CONFIG_FILE=$(loadConfig "$SERIAL_NUMBER") || endbeep
+			date +"%T Config loaded successfully. Committing..."
+			sleep 5
+			commit
+			ZTP_COMMIT_RETURN=$?
+			if (( ZTP_COMMIT_RETURN == 1 )); then
+				echo "WARNING: communication with the firewall lost after commit. Exiting..."
+				endbeep
+			elif (( ZTP_COMMIT_RETURN == 2 )); then
+				if (( ZTP_DISABLED == 1 )); then
+					echo "ERROR: unable to disable ztp. Exiting..."
+					endbeep
+				fi
+				echo "Firewall has ztp enabled. Attempting to disable..."
+				curler "https://${FIREWALL_ADDRESS}/api/?type=op&cmd=<set><system><ztp><disable></disable></ztp></system></set>" "/response/@status" 10 || endbeep
+				ZTP_DISABLED=1
+				date +"%T Disabling ZTP. Waiting up to 15 minutes for the reboot to complete."
+				sleep 240
+				# Disabling ZTP causes a factory reset
+				if [[ "$ACTIVE_PASSWORD" != "admin" ]]; then BACKUP_PASSWORD="$ACTIVE_PASSWORD"; ACTIVE_PASSWORD="admin"; fi
+				if ! (curler "https://${FIREWALL_ADDRESS}/api/?type=op&cmd=<show><system><info></info></system></show>" "/response/@status" 660); then
+					date +"%T Disabling ZTP caused a factory reset. Resetting password..."
+					if [[ "$ACTIVE_PASSWORD" != "admin" ]]; then BACKUP_PASSWORD="$ACTIVE_PASSWORD"; ACTIVE_PASSWORD="admin"; fi
+					passwordChange || endbeep
+					if [[ "$ACTIVE_PASSWORD" == "admin" ]]; then ACTIVE_PASSWORD="$BACKUP_PASSWORD"; BACKUP_PASSWORD="admin"; fi
+				fi
+				checkAutoCom "$FIREWALL_ADDRESS" || { date +"%T ZTP disable unsuccessful. Exiting..."; endbeep; }
+				ZTP_REBOOTED=1
+				date +"%T ZTP disable complete. Attempting configuration commit..."
+				continue
+			fi
+			date +"%T Config committed successfully. Running diff between source file and new running config. Ideally this should be empty."
+			NEW_RUNNING_CONFIG=$(curler "https://${FIREWALL_ADDRESS}/api/?type=config&action=show" " " 120 " " " " "raw") || endbeep
+			date +"%T ################ SOURCE FILE VS RUNNING CONFIG DIFF ################"
+			if (( DRY_RUN != 1 )); then diff "$CONFIG_FILE" <(echo "$NEW_RUNNING_CONFIG"); else echo "DRY RUN"; fi
+			date +"%T #############################################################"
+			# Free the memory
+			unset NEW_RUNNING_CONFIG
+			# Print show system info
+			date +"%T ##################### SHOW SYSTEM INFO ######################"
+			curler "https://${FIREWALL_ADDRESS}/api/?type=op&cmd=<show><system><info></info></system></show>" " " 10 " " " " "raw" || endbeep
+			date +"%T #############################################################"
+			break
+		done
+	fi
+	
+	if (( ZTP_REBOOTED == 1 )) && (( SET_PRA_AUTHKEY == 1 )); then
+		if (( DRY_RUN == 1 )); then
+			date +"%T Would set Panorama authkey ${PANORAMA_AUTHKEY} on ${FIREWALL_ADDRESS} now"
+		else
+			date +"%T Setting Panorama authkey ${PANORAMA_AUTHKEY} on ${FIREWALL_ADDRESS}"
+			curler "https://${FIREWALL_ADDRESS}/api/?type=op&cmd=<request><authkey><set>${PANORAMA_AUTHKEY}</set></authkey></request>" "/response/@status" 10 || endbeep
+		fi
 	fi
 	
 	healthChecks || { date +"%T --- ERROR --- Detected process errors on the firewall. Use the -i flag to ignore."; if (( IGNORE_ERRORS == 0 )); then endbeep; fi; }
@@ -2670,23 +2716,64 @@ if [[ "$CURRENT_VERSION" == "$DESIRED_VERSION" ]]; then
 			curler "https://${FIREWALL_ADDRESS}/api/?type=op&cmd=<request><authkey><set>${PANORAMA_AUTHKEY}</set></authkey></request>" "/response/@status" 10 || endbeep
 		fi
 	fi
+	
 	if (( INSTALL_CONFIG == 1 )); then
-		date +"%T Uploading config on ${FIREWALL_ADDRESS}"
-		CONFIG_FILE=$(loadConfig "$SERIAL_NUMBER") || endbeep
-		date +"%T Config loaded successfully. Committing..."
-		sleep 5
-		commit || { echo "WARNING: communication with the firewall lost after commit. Exiting..."; endbeep; }
-		date +"%T Config committed successfully. Running diff between source file and new running config. Ideally this should be empty."
-		NEW_RUNNING_CONFIG=$(curler "https://${FIREWALL_ADDRESS}/api/?type=config&action=show" " " 120 " " " " "raw") || endbeep
-		date +"%T ################ SOURCE FILE VS RUNNING CONFIG DIFF ################"
-		if (( DRY_RUN != 1 )); then diff "$CONFIG_FILE" <(echo "$NEW_RUNNING_CONFIG"); else echo "DRY RUN"; fi
-		date +"%T #############################################################"
-		# Free the memory
-		unset NEW_RUNNING_CONFIG
-		# Print show system info
-		date +"%T ##################### SHOW SYSTEM INFO ######################"
-		curler "https://${FIREWALL_ADDRESS}/api/?type=op&cmd=<show><system><info></info></system></show>" " " 10 " " " " "raw" || endbeep
-		date +"%T #############################################################"
+		while true
+		do
+			date +"%T Uploading config on ${FIREWALL_ADDRESS}"
+			CONFIG_FILE=$(loadConfig "$SERIAL_NUMBER") || endbeep
+			date +"%T Config loaded successfully. Committing..."
+			sleep 5
+			commit
+			ZTP_COMMIT_RETURN=$?
+			if (( ZTP_COMMIT_RETURN == 1 )); then
+				echo "WARNING: communication with the firewall lost after commit. Exiting..."
+				endbeep
+			elif (( ZTP_COMMIT_RETURN == 2 )); then
+				if (( ZTP_DISABLED == 1 )); then
+					echo "ERROR: unable to disable ztp. Exiting..."
+					endbeep
+				fi
+				echo "Firewall has ztp enabled. Attempting to disable..."
+				curler "https://${FIREWALL_ADDRESS}/api/?type=op&cmd=<set><system><ztp><disable></disable></ztp></system></set>" "/response/@status" 10 || endbeep
+				ZTP_DISABLED=1
+				date +"%T Disabling ZTP. Waiting up to 15 minutes for the reboot to complete."
+				sleep 240
+				# Disabling ZTP causes a factory reset
+				if [[ "$ACTIVE_PASSWORD" != "admin" ]]; then BACKUP_PASSWORD="$ACTIVE_PASSWORD"; ACTIVE_PASSWORD="admin"; fi
+				if ! (curler "https://${FIREWALL_ADDRESS}/api/?type=op&cmd=<show><system><info></info></system></show>" "/response/@status" 660); then
+					date +"%T Disabling ZTP caused a factory reset. Resetting password..."
+					if [[ "$ACTIVE_PASSWORD" != "admin" ]]; then BACKUP_PASSWORD="$ACTIVE_PASSWORD"; ACTIVE_PASSWORD="admin"; fi
+					passwordChange || endbeep
+					if [[ "$ACTIVE_PASSWORD" == "admin" ]]; then ACTIVE_PASSWORD="$BACKUP_PASSWORD"; BACKUP_PASSWORD="admin"; fi
+				fi
+				checkAutoCom "$FIREWALL_ADDRESS" || { date +"%T ZTP disable unsuccessful. Exiting..."; endbeep; }
+				ZTP_REBOOTED=1
+				date +"%T ZTP disable complete. Attempting configuration commit..."
+				continue
+			fi
+			date +"%T Config committed successfully. Running diff between source file and new running config. Ideally this should be empty."
+			NEW_RUNNING_CONFIG=$(curler "https://${FIREWALL_ADDRESS}/api/?type=config&action=show" " " 120 " " " " "raw") || endbeep
+			date +"%T ################ SOURCE FILE VS RUNNING CONFIG DIFF ################"
+			if (( DRY_RUN != 1 )); then diff "$CONFIG_FILE" <(echo "$NEW_RUNNING_CONFIG"); else echo "DRY RUN"; fi
+			date +"%T #############################################################"
+			# Free the memory
+			unset NEW_RUNNING_CONFIG
+			# Print show system info
+			date +"%T ##################### SHOW SYSTEM INFO ######################"
+			curler "https://${FIREWALL_ADDRESS}/api/?type=op&cmd=<show><system><info></info></system></show>" " " 10 " " " " "raw" || endbeep
+			date +"%T #############################################################"
+			break
+		done
+	fi
+	
+	if (( ZTP_REBOOTED == 1 )) && (( SET_PRA_AUTHKEY == 1 )); then
+		if (( DRY_RUN == 1 )); then
+			date +"%T Would set Panorama authkey ${PANORAMA_AUTHKEY} on ${FIREWALL_ADDRESS} now"
+		else
+			date +"%T Setting Panorama authkey ${PANORAMA_AUTHKEY} on ${FIREWALL_ADDRESS}"
+			curler "https://${FIREWALL_ADDRESS}/api/?type=op&cmd=<request><authkey><set>${PANORAMA_AUTHKEY}</set></authkey></request>" "/response/@status" 10 || endbeep
+		fi
 	fi
 	
 	healthChecks || { date +"%T --- ERROR --- Detected process errors on the firewall. Use the -i flag to ignore."; if (( IGNORE_ERRORS == 0 )); then endbeep; fi; }
@@ -2780,22 +2867,62 @@ do
 		fi
 		
 		if (( INSTALL_CONFIG == 1 )); then
-			date +"%T Uploading config on ${FIREWALL_ADDRESS}"
-			CONFIG_FILE=$(loadConfig "$SERIAL_NUMBER") || endbeep
-			date +"%T Config loaded successfully. Committing..."
-			sleep 5
-			commit || { echo "WARNING: communication with the firewall lost after commit. Exiting..."; endbeep; }
-			date +"%T Config committed successfully. Running diff between source file and new running config. Ideally this should be empty."
-			NEW_RUNNING_CONFIG=$(curler "https://${FIREWALL_ADDRESS}/api/?type=config&action=show" " " 120 " " " " "raw") || endbeep
-			date +"%T ################ SOURCE FILE VS RUNNING CONFIG DIFF ################"
-			if (( DRY_RUN != 1 )); then diff "$CONFIG_FILE" <(echo "$NEW_RUNNING_CONFIG"); else echo "DRY RUN"; fi
-			date +"%T #############################################################"
-			# Free the memory
-			unset NEW_RUNNING_CONFIG
-			# Print show system info
-			date +"%T ##################### SHOW SYSTEM INFO ######################"
-			curler "https://${FIREWALL_ADDRESS}/api/?type=op&cmd=<show><system><info></info></system></show>" " " 10 " " " " "raw" || endbeep
-			date +"%T #############################################################"
+			while true
+			do
+				date +"%T Uploading config on ${FIREWALL_ADDRESS}"
+				CONFIG_FILE=$(loadConfig "$SERIAL_NUMBER") || endbeep
+				date +"%T Config loaded successfully. Committing..."
+				sleep 5
+				commit
+				ZTP_COMMIT_RETURN=$?
+				if (( ZTP_COMMIT_RETURN == 1 )); then
+					echo "WARNING: communication with the firewall lost after commit. Exiting..."
+					endbeep
+				elif (( ZTP_COMMIT_RETURN == 2 )); then
+					if (( ZTP_DISABLED == 1 )); then
+						echo "ERROR: unable to disable ztp. Exiting..."
+						endbeep
+					fi
+					echo "Firewall has ztp enabled. Attempting to disable..."
+					curler "https://${FIREWALL_ADDRESS}/api/?type=op&cmd=<set><system><ztp><disable></disable></ztp></system></set>" "/response/@status" 10 || endbeep
+					ZTP_DISABLED=1
+					date +"%T Disabling ZTP. Waiting up to 15 minutes for the reboot to complete."
+					sleep 240
+					# Disabling ZTP causes a factory reset
+					if [[ "$ACTIVE_PASSWORD" != "admin" ]]; then BACKUP_PASSWORD="$ACTIVE_PASSWORD"; ACTIVE_PASSWORD="admin"; fi
+					if ! (curler "https://${FIREWALL_ADDRESS}/api/?type=op&cmd=<show><system><info></info></system></show>" "/response/@status" 660); then
+						date +"%T Disabling ZTP caused a factory reset. Resetting password..."
+						if [[ "$ACTIVE_PASSWORD" != "admin" ]]; then BACKUP_PASSWORD="$ACTIVE_PASSWORD"; ACTIVE_PASSWORD="admin"; fi
+						passwordChange || endbeep
+						if [[ "$ACTIVE_PASSWORD" == "admin" ]]; then ACTIVE_PASSWORD="$BACKUP_PASSWORD"; BACKUP_PASSWORD="admin"; fi
+					fi
+					checkAutoCom "$FIREWALL_ADDRESS" || { date +"%T ZTP disable unsuccessful. Exiting..."; endbeep; }
+					ZTP_REBOOTED=1
+					date +"%T ZTP disable complete. Attempting configuration commit..."
+					continue
+				fi
+				date +"%T Config committed successfully. Running diff between source file and new running config. Ideally this should be empty."
+				NEW_RUNNING_CONFIG=$(curler "https://${FIREWALL_ADDRESS}/api/?type=config&action=show" " " 120 " " " " "raw") || endbeep
+				date +"%T ################ SOURCE FILE VS RUNNING CONFIG DIFF ################"
+				if (( DRY_RUN != 1 )); then diff "$CONFIG_FILE" <(echo "$NEW_RUNNING_CONFIG"); else echo "DRY RUN"; fi
+				date +"%T #############################################################"
+				# Free the memory
+				unset NEW_RUNNING_CONFIG
+				# Print show system info
+				date +"%T ##################### SHOW SYSTEM INFO ######################"
+				curler "https://${FIREWALL_ADDRESS}/api/?type=op&cmd=<show><system><info></info></system></show>" " " 10 " " " " "raw" || endbeep
+				date +"%T #############################################################"
+				break
+			done
+		fi
+		
+		if (( ZTP_REBOOTED == 1 )) && (( SET_PRA_AUTHKEY == 1 )); then
+			if (( DRY_RUN == 1 )); then
+				date +"%T Would set Panorama authkey ${PANORAMA_AUTHKEY} on ${FIREWALL_ADDRESS} now"
+			else
+				date +"%T Setting Panorama authkey ${PANORAMA_AUTHKEY} on ${FIREWALL_ADDRESS}"
+				curler "https://${FIREWALL_ADDRESS}/api/?type=op&cmd=<request><authkey><set>${PANORAMA_AUTHKEY}</set></authkey></request>" "/response/@status" 10 || endbeep
+			fi
 		fi
 		
 		healthChecks || { date +"%T --- ERROR --- Detected process errors on the firewall. Use the -i flag to ignore."; if (( IGNORE_ERRORS == 0 )); then endbeep; fi; }
