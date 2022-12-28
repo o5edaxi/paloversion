@@ -1630,10 +1630,14 @@ return 1
 
 checkFirmwarePresent(){
 
-# Look for presence and file size > 0 kb
+# Look for presence, downloaded == yes, and file size > 0 kb
 
 local FIRMWARE_STATUS
 FIRMWARE_STATUS=$(curler "https://${FIREWALL_ADDRESS}/api/?type=op&cmd=<request><system><software><info></info></software></system></request>" " " 10 " " " " "raw") || return 1
+DOWNLOADED_STATUS=$(echo "$FIRMWARE_STATUS" | xmlstarlet sel -t -m "/response/result/sw-updates/versions/entry[filename=\"$1\"]" -v downloaded 2>/dev/null)
+if [[ "$DOWNLOADED_STATUS" != "yes" ]]; then
+	return 1
+fi
 FIRMWARE_STATUS=$(echo "$FIRMWARE_STATUS" | xmlstarlet sel -t -m "/response/result/sw-updates/versions/entry[filename=\"$1\"]" -v size-kb 2>/dev/null)
 if [[ "$FIRMWARE_STATUS" == "" ]]; then
 	return 1
