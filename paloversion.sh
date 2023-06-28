@@ -468,12 +468,24 @@ while true
 do
 	while IFS="$SEP" read -r Order2 Name2 Major2 Type2 File2 Checksum2
 	do
+		# Prefer a newer feature release
+		if (( FOUND == 1 )); then
+			if [[ "$Type2" != "Feature" ]]; then
+				break
+			else
+				# Avoid hotfix and beta
+				if ! [[ "$Name2" =~ [-_] ]]; then
+					FEATURE_NEXT="$Name2"
+				fi
+				continue
+			fi
+		fi
 		if (( Order2 == i )); then
 			if [[ "$MAJOR_CUR" != "$Major2" ]]; then
 				if [[ "$Type2" == "Feature" ]]; then
 					FEATURE_NEXT="$Name2"
 					FOUND=1
-					break
+					continue
 				fi
 			fi
 		fi
@@ -707,10 +719,32 @@ fi
 
 date +"%T Firewall at ${FIREWALL_ADDRESS} is up. Uploading software image $2..." >&2
 
-if [[ "$CURRENT_VERSION" =~ ^[0-9]\.[0-2]\. ]] || [[ "$CURRENT_VERSION" =~ ^10\.0\. ]]; then
+# Check for extra csrf protections in newer patches, use API instead
+
+local USE_API_UPLOAD=0
+local CURL_CALL_UPLOAD_00
+if [[ "$FIREWALL_ADDRESS" =~ fe80 ]]; then
+	CURL_CALL_UPLOAD_00=$(curl $CURL_CA_IGNORE -6 --interface "$NETWORK_INTERFACE" -s -D - --max-time 120 --connect-timeout 10 --retry 5 "https://$FIREWALL_ADDRESS/php/login.php?" --data-raw "prot=https:&server=$FIREWALL_ADDRESS&authType=init&challengeCookie=&user=${USERNAME}&passwd=${ACTIVE_PASSWORD}&challengePwd=&ok=Log+In" 2>/dev/null)
+else
+	CURL_CALL_UPLOAD_00=$(curl $CURL_CA_IGNORE -s -D - --max-time 120 --connect-timeout 10 --retry 5 "https://$FIREWALL_ADDRESS/php/login.php?" --data-raw "prot=https:&server=$FIREWALL_ADDRESS&authType=init&challengeCookie=&user=${USERNAME}&passwd=${ACTIVE_PASSWORD}&challengePwd=&ok=Log+In" 2>/dev/null)
+fi
+
+if [[ "$CURL_CALL_UPLOAD_00" == "" ]]; then
+	date +"%T In function upload(), firewall not responding after 5 retries. Exiting..." >&2
+	return 1
+fi
+
+if [[ "$CURL_CALL_UPLOAD_00" =~ ^.*302\ Found.* ]]; then
+	date +"%T Using API to upload." >&2
+	USE_API_UPLOAD=1
+fi
+
+if [[ "$CURRENT_VERSION" =~ ^[0-9]\.[0-2]\. ]] || [[ "$CURRENT_VERSION" =~ ^10\.0\. ]] && (( USE_API_UPLOAD == 0 )); then
 	# Uploading firmware via API seems to be unreliable under certain conditions in older versions
 	# There are also more CSRF checks starting from 10.1 which make the hack difficult to maintain
 	# Tentatively use API to upload from 10.1 onwards
+	
+	date +"%T Using old method to upload." >&2
 
 	local SANITY_CHECK
 	SANITY_CHECK=$(curler "https://${FIREWALL_ADDRESS}/api/?type=op&cmd=<show><system><info></info></system></show>" "/response/@status" 10 ) || return 1
@@ -804,7 +838,10 @@ else
 	RESULT_API_UPLOAD=$(curler "https://${FIREWALL_ADDRESS}/api/?type=import&category=software" "/response/@status" 300 "-F" "file=@${FILE_PATH}") || { SILENT_CURL="-s"; return 1; }
 	SILENT_CURL="-s"
 	
-	if [[ "$RESULT_API_UPLOAD" != "success" ]]; then
+	if [[ "$RESULT_API_UPLOAD" == "Resource temporarily unavailable" ]]; then
+		date +"%T Resource temporarily unavailable after upload. Continuing..." >&2
+		return 0
+	elif [[ "$RESULT_API_UPLOAD" != "success" ]]; then
 		date +"%T Software upload of file $FILE_PATH failed. Exiting..." >&2
 		return 1
 	fi
@@ -1266,13 +1303,40 @@ done
 
 passwordChange(){
 
-# GET
+local COOKIE
+local CSRF
+
+# FIRST GET
+
+local CURL_CALL_PWDCHANGE_00
+if [[ "$FIREWALL_ADDRESS" =~ fe80 ]]; then
+	CURL_CALL_PWDCHANGE_00=$(curl $CURL_CA_IGNORE -6 --interface "$NETWORK_INTERFACE" -s -D - --max-time 1800 --connect-timeout 3 --retry 5 "https://${FIREWALL_ADDRESS}/")
+else
+	CURL_CALL_PWDCHANGE_00=$(curl $CURL_CA_IGNORE -s -D - --max-time 1800 --connect-timeout 3 --retry 5 "https://${FIREWALL_ADDRESS}/")
+fi
+
+if [[ "$CURL_CALL_PWDCHANGE_00" == "" ]]; then
+	date +"%T In function passwordChange(), firewall not responding after 5 retries. Exiting..." >&2
+	return 1
+fi
+
+# Get cookie if sent
+if [[ "$CURL_CALL_PWDCHANGE_00" =~ ^.*PHPSESSID\=([^\;\"]*)[\;\"].* ]]; then
+	COOKIE=$(echo "$CURL_CALL_PWDCHANGE_00" | grep -m 1 PHPSESSID | sed -r 's/.*PHPSESSID\=([^;"]*)[;"].*/\1/')
+fi
+
+# Get token if sent
+if [[ "$CURL_CALL_PWDCHANGE_00" =~ ^.*window\.Pan\.st\.st\.st[0-9]+\ \=\ \"[^\"]+\".* ]]; then
+	CSRF=$(echo "$CURL_CALL_PWDCHANGE_00" | grep -m 1 window\.Pan\.st\.st\.st | sed -r 's/^.*window\.Pan\.st\.st\.st[0-9]+\ \=\ \"([^\"]+)\".*/\1/')
+fi
+
+# SECOND GET
 
 local CURL_CALL_PWDCHANGE_0
 if [[ "$FIREWALL_ADDRESS" =~ fe80 ]]; then
-	CURL_CALL_PWDCHANGE_0=$(curl $CURL_CA_IGNORE -6 --interface "$NETWORK_INTERFACE" -s -D - --max-time 1800 --connect-timeout 3 --retry 5 "https://${FIREWALL_ADDRESS}/php/login.php?")
+	CURL_CALL_PWDCHANGE_0=$(curl $CURL_CA_IGNORE -6 --interface "$NETWORK_INTERFACE" -s -D - --max-time 1800 --connect-timeout 3 --retry 5 -H "Cookie: PHPSESSID=${COOKIE}" "https://${FIREWALL_ADDRESS}/php/login.php?")
 else
-	CURL_CALL_PWDCHANGE_0=$(curl $CURL_CA_IGNORE -s -D - --max-time 1800 --connect-timeout 3 --retry 5 "https://${FIREWALL_ADDRESS}/php/login.php?")
+	CURL_CALL_PWDCHANGE_0=$(curl $CURL_CA_IGNORE -s -D - --max-time 1800 --connect-timeout 3 --retry 5 -H "Cookie: PHPSESSID=${COOKIE}" "https://${FIREWALL_ADDRESS}/php/login.php?")
 fi
 
 if [[ "$CURL_CALL_PWDCHANGE_0" == "" ]]; then
@@ -1288,13 +1352,13 @@ elif ! [[ "$CURL_CALL_PWDCHANGE_0" =~ ^.*window\.Pan\.st\.st\.st[0-9]+\ \=\ \"[^
 	return 1
 fi
 
-# csrf tokens
+# Update if changed
 
 local CSRF
-CSRF=$(echo "$CURL_CALL_PWDCHANGE_0" | grep window\.Pan\.st\.st\.st | sed -r 's/^.*window\.Pan\.st\.st\.st[0-9]+\ \=\ \"([^\"]+)\".*/\1/')
+CSRF=$(echo "$CURL_CALL_PWDCHANGE_0" | grep -m 1 window\.Pan\.st\.st\.st | sed -r 's/^.*window\.Pan\.st\.st\.st[0-9]+\ \=\ \"([^\"]+)\".*/\1/')
 
 local COOKIE
-COOKIE=$(echo "$CURL_CALL_PWDCHANGE_0" | grep PHPSESSID | sed -r 's/.*PHPSESSID\=([^;"]*)[;"].*/\1/')
+COOKIE=$(echo "$CURL_CALL_PWDCHANGE_0" | grep -m 1 PHPSESSID | sed -r 's/.*PHPSESSID\=([^;"]*)[;"].*/\1/')
 
 # POST LOGIN
 
@@ -1313,20 +1377,49 @@ elif ! [[ "$CURL_CALL_PWDCHANGE_1" =~ ^.*PHPSESSID\=([^\;\"]*)[\;\"].* ]]; then
 	return 1
 fi
 
-# Refresh PHPSESSID
+# Update if changed
 
-COOKIE=$(echo "$CURL_CALL_PWDCHANGE_1" | grep PHPSESSID | sed -r 's/.*PHPSESSID\=([^;"]*)[;"].*/\1/')
+local CSRF
+CSRF=$(echo "$CURL_CALL_PWDCHANGE_1" | grep -m 1 window\.Pan\.st\.st\.st | sed -r 's/^.*window\.Pan\.st\.st\.st[0-9]+\ \=\ \"([^\"]+)\".*/\1/')
+
+local COOKIE
+COOKIE=$(echo "$CURL_CALL_PWDCHANGE_1" | grep -m 1 PHPSESSID | sed -r 's/.*PHPSESSID\=([^;"]*)[;"].*/\1/')
+
 
 date +"%T Attempting to change password for user \"$USERNAME\" to \"$BACKUP_PASSWORD\" as requested by PANOS. The change might not survive a reboot unless explicitly committed." >&2
 beep >&2
 
-# Change password
+# THIRD GET
 
 local CURL_CALL_PWDCHANGE_2
 if [[ "$FIREWALL_ADDRESS" =~ fe80 ]]; then
-	CURL_CALL_PWDCHANGE_2=$(curl $CURL_CA_IGNORE -6 --interface "$NETWORK_INTERFACE" -s --max-time 1800 --connect-timeout 3 --retry 5 "https://${FIREWALL_ADDRESS}/unauth/php/change_password.php" -H "Cookie: PHPSESSID=${COOKIE}" --data-raw "old_password=${ACTIVE_PASSWORD}&new_password=${BACKUP_PASSWORD}&new_password_confirm=${BACKUP_PASSWORD}&ok=Change+Password")
+	CURL_CALL_PWDCHANGE_2=$(curl $CURL_CA_IGNORE -6 --interface "$NETWORK_INTERFACE" -s -D - --max-time 1800 --connect-timeout 3 --retry 5 -H "Cookie: PHPSESSID=${COOKIE}" "https://${FIREWALL_ADDRESS}/unauth/php/change_password.php")
 else
-	CURL_CALL_PWDCHANGE_2=$(curl $CURL_CA_IGNORE -s --max-time 1800 --connect-timeout 3 --retry 5 "https://${FIREWALL_ADDRESS}/unauth/php/change_password.php" -H "Cookie: PHPSESSID=${COOKIE}" --data-raw "old_password=${ACTIVE_PASSWORD}&new_password=${BACKUP_PASSWORD}&new_password_confirm=${BACKUP_PASSWORD}&ok=Change+Password")
+	CURL_CALL_PWDCHANGE_2=$(curl $CURL_CA_IGNORE -s -D - --max-time 1800 --connect-timeout 3 --retry 5 -H "Cookie: PHPSESSID=${COOKIE}" "https://${FIREWALL_ADDRESS}/unauth/php/change_password.php")
+fi
+
+if [[ "$CURL_CALL_PWDCHANGE_2" == "" ]]; then
+	date +"%T In function passwordChange(), firewall not responding after 5 retries. Exiting..." >&2
+	return 1
+fi
+
+# Get cookie if sent
+if [[ "$CURL_CALL_PWDCHANGE_2" =~ ^.*PHPSESSID\=([^\;\"]*)[\;\"].* ]]; then
+	COOKIE=$(echo "$CURL_CALL_PWDCHANGE_2" | grep -m 1 PHPSESSID | sed -r 's/.*PHPSESSID\=([^;"]*)[;"].*/\1/')
+fi
+
+# Get token if sent
+if [[ "$CURL_CALL_PWDCHANGE_2" =~ ^.*window\.Pan\.st\.st\.st[0-9]+\ \=\ \"[^\"]+\".* ]]; then
+	CSRF=$(echo "$CURL_CALL_PWDCHANGE_2" | grep -m 1 window\.Pan\.st\.st\.st | sed -r 's/^.*window\.Pan\.st\.st\.st[0-9]+\ \=\ \"([^\"]+)\".*/\1/')
+fi
+
+# Change password POST
+
+local CURL_CALL_PWDCHANGE_3
+if [[ "$FIREWALL_ADDRESS" =~ fe80 ]]; then
+	CURL_CALL_PWDCHANGE_3=$(curl $CURL_CA_IGNORE -6 --interface "$NETWORK_INTERFACE" -s --max-time 1800 --connect-timeout 3 --retry 5 -H "Cookie: PHPSESSID=${COOKIE}" "https://${FIREWALL_ADDRESS}/unauth/php/change_password.php" --data-raw "_csrf=${CSRF}&old_password=${ACTIVE_PASSWORD}&new_password=${BACKUP_PASSWORD}&new_password_confirm=${BACKUP_PASSWORD}&ok=Change+Password")
+else
+	CURL_CALL_PWDCHANGE_3=$(curl $CURL_CA_IGNORE -s --max-time 1800 --connect-timeout 3 --retry 5 -H "Cookie: PHPSESSID=${COOKIE}" "https://${FIREWALL_ADDRESS}/unauth/php/change_password.php" --data-raw "_csrf=${CSRF}&old_password=${ACTIVE_PASSWORD}&new_password=${BACKUP_PASSWORD}&new_password_confirm=${BACKUP_PASSWORD}&ok=Change+Password")
 fi
 
 }
@@ -1537,6 +1630,10 @@ do
 		if [[ "$CURL" =~ .*set\ system\ ztp\ disable.* ]]; then
 			echo "ZTP detected" >&2
 			return 3
+		fi
+		if [[ "$CURL" =~ .*Resource\ temporarily\ unavailable.* ]] && [[ "$1" =~ type\=import ]]; then
+			echo "Resource temporarily unavailable"
+			return 0
 		fi
 		return 1
 	else
@@ -1826,7 +1923,8 @@ uploadLicenses(){
 			date +"%T Waiting up to 15 minutes for the reboot to complete."
 			sleep 240
 			# Use keygen to receive expired password notifications
-			VM_REBOOT_RESULT=$(curler "https://${FIREWALL_ADDRESS}/api/?type=keygen&user=${USERNAME}&password=${ACTIVE_PASSWORD}" "/response/@status" 660) || VM_REBOOT_RESULT=$(curler "https://${FIREWALL_ADDRESS}/api/?type=keygen&user=${USERNAME}&password=${ACTIVE_PASSWORD}" "/response/@status" 660) || endbeep
+			ESCAPED_PASS=$(echo "$ACTIVE_PASSWORD" | sed -r 's/(\{|\}|\[|\])/\\\1/g')
+			VM_REBOOT_RESULT=$(curler "https://${FIREWALL_ADDRESS}/api/?type=keygen&user=${USERNAME}&password=${ESCAPED_PASS}" "/response/@status" 660) || VM_REBOOT_RESULT=$(curler "https://${FIREWALL_ADDRESS}/api/?type=keygen&user=${USERNAME}&password=${ESCAPED_PASS}" "/response/@status" 660) || endbeep
 			if [[ "$VM_REBOOT_RESULT" != "success" ]]; then
 				date +"%T VM capacity upgrade unsuccessful. Exiting..."
 				return 1
@@ -2301,8 +2399,9 @@ if (( BATCH_MODE == 1 )); then
 		FIREWALL_ADDRESS="[${i}]"
 		
 		# Use the keygen function twice to ensure we get password change notifications post 10.2 and try both passwords
-
-		curler "https://[${i}]/api/?type=keygen&user=${USERNAME}&password=${ACTIVE_PASSWORD}" "/response/@status" 10 1>/dev/null || curler "https://[${i}]/api/?type=keygen&user=${USERNAME}&password=${ACTIVE_PASSWORD}" "/response/@status" 10 1>/dev/null || endbeep
+		ESCAPED_PASS=""
+		ESCAPED_PASS=$(echo "$ACTIVE_PASSWORD" | sed -r 's/(\{|\}|\[|\])/\\\1/g')
+		curler "https://[${i}]/api/?type=keygen&user=${USERNAME}&password=${ESCAPED_PASS}" "/response/@status" 10 1>/dev/null || curler "https://[${i}]/api/?type=keygen&user=${USERNAME}&password=${ESCAPED_PASS}" "/response/@status" 10 1>/dev/null || endbeep
 		
 		SERIAL_1=$(curler "https://[${i}]/api/?type=op&cmd=<show><system><info></info></system></show>" "/response/result/system/serial" 60 2> "${i}".log) || { SERIAL_ARRAY+=( "$i" ); STATUS_ARRAY+=( "FAILED" ); date +"%T Firewall at $i init failed. Skipping..." >> "$LOG_FILE"; date +"%T Firewall at $i init failed. Skipping..."; echo "---FAILED---" >> "${i}.log"; continue; }
 		
@@ -2502,8 +2601,9 @@ fi
 
 # Set active password the first time to avoid constant password swap, as curler is usually called in a subshell
 # Use the keygen function to ensure we get password change notifications post 10.2
-
-curler "https://${FIREWALL_ADDRESS}/api/?type=keygen&user=${USERNAME}&password=${ACTIVE_PASSWORD}" "/response/@status" 10 1>/dev/null || endbeep
+ESCAPED_PASS=""
+ESCAPED_PASS=$(echo "$ACTIVE_PASSWORD" | sed -r 's/(\{|\}|\[|\])/\\\1/g')
+curler "https://${FIREWALL_ADDRESS}/api/?type=keygen&user=${USERNAME}&password=${ESCAPED_PASS}" "/response/@status" 10 1>/dev/null || endbeep
 
 checkAutoCom "$FIREWALL_ADDRESS" || endbeep
 
@@ -2525,7 +2625,9 @@ fi
 
 # Deal with ZTP
 
-ZTP_ACTIVE=$(curler "https://${FIREWALL_ADDRESS}/api/?type=op&cmd=<show><system><ztp><status></status></ztp></system></show>" "/response/result" 10) || endbeep
+if ! [[ "$CURRENT_VERSION" =~ ^[0-9]\.0\. ]]; then
+	ZTP_ACTIVE=$(curler "https://${FIREWALL_ADDRESS}/api/?type=op&cmd=<show><system><ztp><status></status></ztp></system></show>" "/response/result" 10) || endbeep
+fi
 
 if [[ "$ZTP_ACTIVE" =~ connect\ to\ ztp\ service ]]; then
 	if (( ZTP_DISABLED == 1 )); then
@@ -2537,10 +2639,11 @@ if [[ "$ZTP_ACTIVE" =~ connect\ to\ ztp\ service ]]; then
 	ZTP_DISABLED=1
 	date +"%T Disabling ZTP. Waiting up to 15 minutes for the reboot to complete."
 	sleep 240
+	JUST_REBOOTED=1
 	# Disabling ZTP causes a factory reset
 	USERNAME="$FACTORY_USERNAME"
 	if [[ "$ACTIVE_PASSWORD" != "$FACTORY_PASSWORD" ]]; then BACKUP_PASSWORD="$ACTIVE_PASSWORD"; ACTIVE_PASSWORD="$FACTORY_PASSWORD"; fi
-	if ! (curler "https://${FIREWALL_ADDRESS}/api/?type=op&cmd=<show><system><info></info></system></show>" "/response/@status" 660); then
+	if ! (curler "https://${FIREWALL_ADDRESS}/api/?type=keygen&user=${USERNAME}&password=${ACTIVE_PASSWORD}" "/response/@status" 660); then
 		date +"%T Disabling ZTP caused a factory reset. Resetting password..."
 		if [[ "$ACTIVE_PASSWORD" != "$FACTORY_PASSWORD" ]]; then BACKUP_PASSWORD="$ACTIVE_PASSWORD"; ACTIVE_PASSWORD="$FACTORY_PASSWORD"; fi
 		passwordChange || endbeep
@@ -2600,7 +2703,9 @@ if (( EASY == 1 )); then
 				# Catch factory resets (admin/admin)
 				if [[ "$ACTIVE_PASSWORD" != "$FACTORY_PASSWORD" ]]; then BACKUP_PASSWORD="$ACTIVE_PASSWORD"; ACTIVE_PASSWORD="$FACTORY_PASSWORD"; fi
 				date +"%T Possible factory reset. Retrying default credentials"
-				curler "https://${FIREWALL_ADDRESS}/api/?type=keygen&user=${FACTORY_USERNAME}&password=${FACTORY_PASSWORD}" "/response/@status" 10 1>/dev/null 
+				ESCAPED_PASS=""
+				ESCAPED_PASS=$(echo "$FACTORY_PASSWORD" | sed -r 's/(\{|\}|\[|\])/\\\1/g')
+				curler "https://${FIREWALL_ADDRESS}/api/?type=keygen&user=${FACTORY_USERNAME}&password=${ESCAPED_PASS}" "/response/@status" 10 1>/dev/null 
 			fi
 			CURRENT_VERSION=$(curler "https://${FIREWALL_ADDRESS}/api/?type=op&cmd=<show><system><info></info></system></show>" "/response/result/system/sw-version" 10) || endbeep
 			MAJOR_CUR="$CURRENT_VERSION"
@@ -2630,7 +2735,9 @@ if (( EASY == 1 )); then
 			# Catch factory resets (admin/admin)
 			if [[ "$ACTIVE_PASSWORD" != "$FACTORY_PASSWORD" ]]; then BACKUP_PASSWORD="$ACTIVE_PASSWORD"; ACTIVE_PASSWORD="$FACTORY_PASSWORD"; fi
 			date +"%T Possible factory reset. Retrying default credentials"
-			curler "https://${FIREWALL_ADDRESS}/api/?type=keygen&user=${FACTORY_USERNAME}&password=${FACTORY_PASSWORD}" "/response/@status" 10 1>/dev/null 
+			ESCAPED_PASS=""
+			ESCAPED_PASS=$(echo "$FACTORY_PASSWORD" | sed -r 's/(\{|\}|\[|\])/\\\1/g')
+			curler "https://${FIREWALL_ADDRESS}/api/?type=keygen&user=${FACTORY_USERNAME}&password=${ESCAPED_PASS}" "/response/@status" 10 1>/dev/null 
 		fi
 		CURRENT_VERSION=$(curler "https://${FIREWALL_ADDRESS}/api/?type=op&cmd=<show><system><info></info></system></show>" "/response/result/system/sw-version" 10) || endbeep
 		checkAutoCom "$FIREWALL_ADDRESS" || endbeep
@@ -2801,7 +2908,9 @@ do
 				# Catch factory resets (admin/admin)
 				if [[ "$ACTIVE_PASSWORD" != "$FACTORY_PASSWORD" ]]; then BACKUP_PASSWORD="$ACTIVE_PASSWORD"; ACTIVE_PASSWORD="$FACTORY_PASSWORD"; fi
 				date +"%T Possible factory reset. Retrying default credentials"
-				curler "https://${FIREWALL_ADDRESS}/api/?type=keygen&user=${FACTORY_USERNAME}&password=${FACTORY_PASSWORD}" "/response/@status" 10 1>/dev/null 
+				ESCAPED_PASS=""
+				ESCAPED_PASS=$(echo "$FACTORY_PASSWORD" | sed -r 's/(\{|\}|\[|\])/\\\1/g')
+				curler "https://${FIREWALL_ADDRESS}/api/?type=keygen&user=${FACTORY_USERNAME}&password=${ESCAPED_PASS}" "/response/@status" 10 1>/dev/null 
 			fi
 			CURRENT_VERSION=$(curler "https://${FIREWALL_ADDRESS}/api/?type=op&cmd=<show><system><info></info></system></show>" "/response/result/system/sw-version" 10) || endbeep
 			checkAutoCom "$FIREWALL_ADDRESS" || endbeep
