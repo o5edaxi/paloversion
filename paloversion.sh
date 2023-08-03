@@ -435,6 +435,16 @@ fi
 
 nextFeature(){
 
+local ORDER_CUR
+local MAJOR_CUR
+local INPUT_NEXT_FOUND
+local ORDER_MAX
+local FOUND
+
+if [[ "$RECURSION" == "" ]]; then
+        RECURSION=0
+fi
+
 while IFS="$SEP" read -r Order Name Major Type File Checksum
 do
 	if [[ "$Name" == "$2" ]]; then
@@ -491,8 +501,19 @@ do
 		fi
 	done < "$1"
 	if (( FOUND == 1 )); then
-		echo "$FEATURE_NEXT"
-		break
+		if [[ "$2" =~ ^[0-9]\.[0-2]\. ]] || [[ "$2" =~ ^10\.0\. ]] || (( RECURSION == 1 )); then
+			echo "$FEATURE_NEXT"
+			break
+		else
+			# Implement major version skip feature available from 10.1
+			FEATURE_SKIP=$(nextFeature $1 $FEATURE_NEXT) || return 1
+			if [[ "$FEATURE_SKIP" == "Latest" ]] || [[ "$FEATURE_SKIP" == "Error" ]]; then
+				echo "$FEATURE_NEXT"
+			else
+				echo "$FEATURE_SKIP"
+			fi
+			break
+		fi
 	fi
 	if (( i < ORDER_MAX )); then
 		i=$((i + 1))
@@ -512,6 +533,17 @@ fi
 ##########################################################################################################################################################################################
 
 prevFeature(){
+
+local ORDER_CUR
+local MAJOR_CUR
+local INPUT_PREV_FOUND
+local ORDER_MIN
+local FOUND
+
+if [[ "$RECURSION" == "" ]]; then
+        RECURSION=0
+fi
+
 while IFS="$SEP" read -r Order Name Major Type File Checksum
 do
 	if [[ "$Name" == "$2" ]]; then
@@ -549,8 +581,19 @@ do
 		fi
 	done < "$1"
 	if (( FOUND == 1 )); then
-		echo "$FEATURE_NEXT"
-		break
+		if [[ "$2" =~ ^[0-9]\.[0-2]\. ]] || [[ "$2" =~ ^10\.[0-2]\. ]] || (( RECURSION == 1 )); then
+			echo "$FEATURE_NEXT"
+			break
+		else
+			# Implement major version skip feature available from 10.1 (minimum 11.0 for downgrades since we skip 2 majors)
+			FEATURE_SKIP=$(prevFeature $1 $FEATURE_NEXT) || return 1
+			if [[ "$FEATURE_SKIP" == "Earliest" ]] || [[ "$FEATURE_SKIP" == "Error" ]]; then
+				echo "$FEATURE_NEXT"
+			else
+				echo "$FEATURE_SKIP"
+			fi
+			break
+		fi
 	fi
 	if (( i > ORDER_MIN )); then
 		i=$((i - 1))
