@@ -108,7 +108,7 @@ Autocommit/Process errors during upgrades and downgrades will not stop the activ
 
 This script requires **curl**, **xmlstarlet**, and **iproute2** to function. Most modern systems will already have curl and iproute2 on board. Install xmlstarlet with **sudo apt install xmlstarlet**
 
-The script has been tested with PanOS 7.1 all the way to 10.2 on several different platform families including 220, 400, 800, 3000, 3200, 5000, 5200, and vm.
+The script has been tested with PanOS 7.1 all the way to 11.1 on several different platform families including 220, 400, 800, 3000, 3200, 5000, 5200, and vm.
 
 ### Easy mode
 
