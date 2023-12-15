@@ -504,7 +504,8 @@ do
 		fi
 	done < "$1"
 	if (( FOUND == 1 )); then
-		if [[ "$2" =~ ^[0-9]\.[0-2]\. ]] || [[ "$2" =~ ^10\.0\. ]] || (( RECURSION > 0 )); then
+		# No version skip if target major is <= 10.0 or there is only 1 hop to the target major
+		if [[ "$2" =~ ^[0-9]\.[0-2]\. ]] || [[ "$2" =~ ^10\.0\. ]] || [[ "$Major2" == "$MAJOR_REQ" ]] || (( RECURSION > 0 )); then
 			echo "$FEATURE_NEXT"
 			break
 		else
@@ -587,7 +588,8 @@ do
 		fi
 	done < "$1"
 	if (( FOUND == 1 )); then
-		if [[ "$2" =~ ^[0-9]\.[0-2]\. ]] || [[ "$2" =~ ^10\.[0-2]\. ]] || (( RECURSION > 0 )); then
+		# No version skip if target major is <= 10.0 or there is only 1 hop to the target major
+		if [[ "$2" =~ ^[0-9]\.[0-2]\. ]] || [[ "$2" =~ ^10\.[0-2]\. ]] || [[ "$Major2" == "$MAJOR_REQ" ]] || (( RECURSION > 0 )); then
 			echo "$FEATURE_NEXT"
 			break
 		else
@@ -896,6 +898,8 @@ else
 	fi
 fi
 
+sleep 1
+
 # Software is sometimes not showing even after a successful upload
 # checkFirmwarePresent "$2" || { date +"%T Software upload failed. Exiting..." >&2; return 1; }
 
@@ -924,6 +928,8 @@ local t
 t=0
 local DELETION_ATTEMPTED
 DELETION_ATTEMPTED=0
+local INSTALL_RETRIES_TYPE_1
+INSTALL_RETRIES_TYPE_1=0
 local JOB_STATUS
 local JOB_STATUS_RESULT
 local JOB_STATUS_MSG
@@ -946,6 +952,15 @@ do
 			date +"%T Installation failed, PAN-OS requests a reboot..." >&2
 			rebootSystem || return 1
 			return 2
+		# Issue #2
+		elif [[ "$JOB_STATUS_MSG" =~ software\ manager\ is\ currently\ in\ use ]] && (( INSTALL_RETRIES_TYPE_1 < 16 )); then
+			date +"%T Installation failed, software manager currently in use. Waiting 1 minute and trying again..." >&2
+			(( INSTALL_RETRIES_TYPE_1++ ))
+			sleep 60
+			JOB_ID=$(curler "https://${FIREWALL_ADDRESS}/api/?type=op&cmd=<request><system><software><install><version>$1</version></install></software></system></request>" "/response/result/job" 30 ) || return 1
+			date +"%T Installing software version $1 on device ${FIREWALL_ADDRESS}. Job ID is ${JOB_ID}." >&2
+			t=0
+			continue
 		else
 			date +"%T Software version $1 installation failed with reason: \"${JOB_STATUS_MSG}\". Exiting..." >&2
 			return 1
@@ -953,8 +968,8 @@ do
 	fi
 	((t++))
 	sleep 5
-	if (( t > 180 )); then
-		date +"%T Firewall ${FIREWALL_ADDRESS} software version $1 installation not complete after 15 minutes. Exiting..." >&2
+	if (( t > 540 )); then
+		date +"%T Firewall ${FIREWALL_ADDRESS} software version $1 installation not complete after 45 minutes. Exiting..." >&2
 		return 1
 	fi
 	JOB_STATUS=$(curler "https://${FIREWALL_ADDRESS}/api/?type=op&cmd=<show><jobs><id>${JOB_ID}</id></jobs></show>" " " 10 " " " " "raw")
@@ -970,6 +985,8 @@ do
 		fi
 	fi
 done
+
+sleep 1
 
 }
 
@@ -1214,8 +1231,8 @@ do
 	fi
 	((t++))
 	sleep 5
-	if (( t > 90 )); then
-		date +"%T Firewall ${FIREWALL_ADDRESS} content $CONTENT_FILE installation not complete after 15 minutes. Exiting..." >&2
+	if (( t > 540 )); then
+		date +"%T Firewall ${FIREWALL_ADDRESS} content $CONTENT_FILE installation not complete after 45 minutes. Exiting..." >&2
 		return 1
 	fi
 	JOB_STATUS_CONTENT=$(curler "https://${FIREWALL_ADDRESS}/api/?type=op&cmd=<show><jobs><id>${JOB_ID_CONTENT}</id></jobs></show>" " " 10 " " " " "raw") || return 1
@@ -1231,6 +1248,8 @@ do
 		fi
 	fi
 done
+
+sleep 1
 
 }
 
@@ -1326,8 +1345,8 @@ do
 	fi
 	((t++))
 	sleep 5
-	if (( t > 90 )); then
-		date +"%T Firewall ${FIREWALL_ADDRESS} content $1 installation not complete after 15 minutes. Exiting..." >&2
+	if (( t > 540 )); then
+		date +"%T Firewall ${FIREWALL_ADDRESS} content $1 installation not complete after 45 minutes. Exiting..." >&2
 		return 1
 	fi
 	JOB_STATUS_CONTENT=$(curler "https://${FIREWALL_ADDRESS}/api/?type=op&cmd=<show><jobs><id>${JOB_ID_CONTENT}</id></jobs></show>" " " 10 " " " " "raw") || return 1
@@ -1343,6 +1362,8 @@ do
 		fi
 	fi
 done
+
+sleep 1
 
 }
 
@@ -1894,8 +1915,8 @@ upgradeAntivirus(){
 		fi
 		((t++))
 		sleep 5
-		if (( t > 90 )); then
-			date +"%T Firewall ${FIREWALL_ADDRESS} antivirus $1 installation not complete after 15 minutes. Exiting..." >&2
+		if (( t > 540 )); then
+			date +"%T Firewall ${FIREWALL_ADDRESS} antivirus $1 installation not complete after 45 minutes. Exiting..." >&2
 			return 1
 		fi
 		JOB_STATUS_AV=$(curler "https://${FIREWALL_ADDRESS}/api/?type=op&cmd=<show><jobs><id>${JOB_ID_AV}</id></jobs></show>" " " 10 " " " " "raw") || return 1
@@ -1911,6 +1932,8 @@ upgradeAntivirus(){
 			fi
 		fi
 	done
+	
+	sleep 1
 	
 }
 
