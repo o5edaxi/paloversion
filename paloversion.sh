@@ -504,7 +504,7 @@ do
 		fi
 	done < "$1"
 	if (( FOUND == 1 )); then
-		# No version skip if target major is <= 10.0 or there is only 1 hop to the target major
+		# No version skip if starting major is <= 10.0 or there is only 1 hop to the target major
 		if [[ "$2" =~ ^[0-9]\.[0-2]\. ]] || [[ "$2" =~ ^10\.0\. ]] || [[ "$Major2" == "$MAJOR_REQ" ]] || (( RECURSION > 0 )); then
 			echo "$FEATURE_NEXT"
 			break
