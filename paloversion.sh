@@ -960,7 +960,6 @@ do
 			JOB_ID=$(curler "https://${FIREWALL_ADDRESS}/api/?type=op&cmd=<request><system><software><install><version>$1</version></install></software></system></request>" "/response/result/job" 30 ) || return 1
 			date +"%T Installing software version $1 on device ${FIREWALL_ADDRESS}. Job ID is ${JOB_ID}." >&2
 			t=0
-			continue
 		else
 			date +"%T Software version $1 installation failed with reason: \"${JOB_STATUS_MSG}\". Exiting..." >&2
 			return 1
