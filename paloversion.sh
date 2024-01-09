@@ -1515,6 +1515,7 @@ local KEEPALIVE
 local CURL
 local CURL_2
 local CURL_3
+local CURL_4
 local ARG3=$3
 local CURL_RET_CODE
 
@@ -1525,6 +1526,7 @@ do
 	CURL=""
 	CURL_2=""
 	CURL_3=""
+	CURL_4=""
 	if (( RETRYING_CURLER != 1 )); then
 		SECONDS=0
 	fi
@@ -1605,7 +1607,7 @@ do
 		echo "$OUTPUT"
 		return 0
 	elif [[ "$CURL" == "" && "$7" != "notimeout" ]]; then
-		date +"%T Firewall API call response empty or timed out after $3 seconds." >&2
+		date +"%T Firewall API call response empty or timed out after ${ARG3} seconds." >&2
 		return 1
 	elif [[ $(echo "$CURL" | xmlstarlet sel -t -v "/response/@code" 2>/dev/null) == "16" ]]; then
 		date +"%T User ${USERNAME} has insufficient API privileges to perform the operation. Exiting..." >&2
@@ -1618,9 +1620,18 @@ do
 		ACTIVE_PASSWORD="$BACKUP_PASSWORD"
 		BACKUP_PASSWORD="$THIRD"
 		
-		# If rebooting, sometimes we get "Invalid Credentials." for primary and backup passwords even if they are correct
+		
 		
 		if (( JUST_REBOOTED == 1 )); then
+			
+			# Ditch early (Issue #3) when using keygen to trigger password change post 10.2 as the logic is outside curler()
+			
+			if [[ "$1" =~ "type=keygen" ]]; then
+				return 1
+			fi
+			
+			# If rebooting, sometimes we get "Invalid Credentials." for primary and backup passwords even if they are correct
+			
 			if (( REBOOT_ENDING == 0 )); then
 				SECONDS=0
 				ARG3=600
@@ -1630,6 +1641,18 @@ do
 					JUST_STARTED=0
 				fi
 			fi
+			
+			# At every retry also check if credentials have reverted to factory, and ditch early (Issue #3)
+			
+			if [[ "$1" =~ fe80 ]]; then
+				CURL_4=$(curl $CURL_CA_IGNORE $SILENT_CURL -6 --interface "$NETWORK_INTERFACE" --max-time 1800 --connect-timeout 3 "$4" "$5" "https://${FIREWALL_ADDRESS}/api/?type=keygen&user=${FACTORY_USERNAME}&password=${FACTORY_PASSWORD}")
+			else
+				CURL_4=$(curl $CURL_CA_IGNORE $SILENT_CURL --max-time 1800 --connect-timeout 3 "$4" "$5" "https://${FIREWALL_ADDRESS}/api/?type=keygen&user=${FACTORY_USERNAME}&password=${FACTORY_PASSWORD}")
+			fi
+			if [[ $(echo "$CURL_4" | xmlstarlet sel -t -v "/response/result/msg" 2>/dev/null) == "Please change your password." ]]; then
+				return 4
+			fi
+			
 			RETRYING_CURLER=1
 			sleep 2
 			continue
@@ -2770,14 +2793,16 @@ if (( EASY == 1 )); then
 		fi
 		if (( JUST_REBOOTED == 1 )); then
 			# Wait for bootup
-			if ! (curler "https://${FIREWALL_ADDRESS}/api/?type=op&cmd=<show><system><info></info></system></show>" "/response/result/system/sw-version" 3600); then
+			BOOT_WAIT=$(curler "https://${FIREWALL_ADDRESS}/api/?type=op&cmd=<show><system><info></info></system></show>" "/response/result/system/sw-version" 3600)
+			if (( $? == 4 )); then
 				# Catch factory resets (admin/admin)
 				if [[ "$ACTIVE_PASSWORD" != "$FACTORY_PASSWORD" ]]; then BACKUP_PASSWORD="$ACTIVE_PASSWORD"; ACTIVE_PASSWORD="$FACTORY_PASSWORD"; fi
-				date +"%T Possible factory reset. Retrying default credentials"
+				date +"%T Possible factory reset or password revert. Retrying default credentials"
 				ESCAPED_PASS=""
 				ESCAPED_PASS=$(echo "$FACTORY_PASSWORD" | sed -r 's/(\{|\}|\[|\])/\\\1/g')
-				curler "https://${FIREWALL_ADDRESS}/api/?type=keygen&user=${FACTORY_USERNAME}&password=${ESCAPED_PASS}" "/response/@status" 10 1>/dev/null 
+				curler "https://${FIREWALL_ADDRESS}/api/?type=keygen&user=${FACTORY_USERNAME}&password=${ESCAPED_PASS}" "/response/@status" 10 1>/dev/null
 			fi
+			date +"%T Firewall appears to be up"
 			CURRENT_VERSION=$(curler "https://${FIREWALL_ADDRESS}/api/?type=op&cmd=<show><system><info></info></system></show>" "/response/result/system/sw-version" 10) || endbeep
 			MAJOR_CUR="$CURRENT_VERSION"
 			checkAutoCom "$FIREWALL_ADDRESS" || endbeep
@@ -2802,14 +2827,16 @@ if (( EASY == 1 )); then
 	
 	if (( JUST_REBOOTED == 1 )); then
 		# Wait for final bootup
-		if ! (curler "https://${FIREWALL_ADDRESS}/api/?type=op&cmd=<show><system><info></info></system></show>" "/response/result/system/sw-version" 3600); then
-			# Catch factory resets (admin/admin)
-			if [[ "$ACTIVE_PASSWORD" != "$FACTORY_PASSWORD" ]]; then BACKUP_PASSWORD="$ACTIVE_PASSWORD"; ACTIVE_PASSWORD="$FACTORY_PASSWORD"; fi
-			date +"%T Possible factory reset. Retrying default credentials"
-			ESCAPED_PASS=""
-			ESCAPED_PASS=$(echo "$FACTORY_PASSWORD" | sed -r 's/(\{|\}|\[|\])/\\\1/g')
-			curler "https://${FIREWALL_ADDRESS}/api/?type=keygen&user=${FACTORY_USERNAME}&password=${ESCAPED_PASS}" "/response/@status" 10 1>/dev/null 
-		fi
+		BOOT_WAIT=$(curler "https://${FIREWALL_ADDRESS}/api/?type=op&cmd=<show><system><info></info></system></show>" "/response/result/system/sw-version" 3600)
+			if (( $? == 4 )); then
+				# Catch factory resets (admin/admin)
+				if [[ "$ACTIVE_PASSWORD" != "$FACTORY_PASSWORD" ]]; then BACKUP_PASSWORD="$ACTIVE_PASSWORD"; ACTIVE_PASSWORD="$FACTORY_PASSWORD"; fi
+				date +"%T Possible factory reset or password revert. Retrying default credentials"
+				ESCAPED_PASS=""
+				ESCAPED_PASS=$(echo "$FACTORY_PASSWORD" | sed -r 's/(\{|\}|\[|\])/\\\1/g')
+				curler "https://${FIREWALL_ADDRESS}/api/?type=keygen&user=${FACTORY_USERNAME}&password=${ESCAPED_PASS}" "/response/@status" 10 1>/dev/null
+			fi
+			date +"%T Firewall appears to be up"
 		CURRENT_VERSION=$(curler "https://${FIREWALL_ADDRESS}/api/?type=op&cmd=<show><system><info></info></system></show>" "/response/result/system/sw-version" 10) || endbeep
 		checkAutoCom "$FIREWALL_ADDRESS" || endbeep
 		healthChecks || { date +"%T --- ERROR --- Detected process errors on the firewall. Use the -i flag to ignore."; if (( IGNORE_ERRORS == 0 )); then endbeep; fi; }
@@ -2975,14 +3002,16 @@ do
 		fi
 	else
 		if (( JUST_REBOOTED == 1 )); then
-			if ! (curler "https://${FIREWALL_ADDRESS}/api/?type=op&cmd=<show><system><info></info></system></show>" "/response/result/system/sw-version" 3600); then
+			BOOT_WAIT=$(curler "https://${FIREWALL_ADDRESS}/api/?type=op&cmd=<show><system><info></info></system></show>" "/response/result/system/sw-version" 3600)
+			if (( $? == 4 )); then
 				# Catch factory resets (admin/admin)
 				if [[ "$ACTIVE_PASSWORD" != "$FACTORY_PASSWORD" ]]; then BACKUP_PASSWORD="$ACTIVE_PASSWORD"; ACTIVE_PASSWORD="$FACTORY_PASSWORD"; fi
-				date +"%T Possible factory reset. Retrying default credentials"
+				date +"%T Possible factory reset or password revert. Retrying default credentials"
 				ESCAPED_PASS=""
 				ESCAPED_PASS=$(echo "$FACTORY_PASSWORD" | sed -r 's/(\{|\}|\[|\])/\\\1/g')
-				curler "https://${FIREWALL_ADDRESS}/api/?type=keygen&user=${FACTORY_USERNAME}&password=${ESCAPED_PASS}" "/response/@status" 10 1>/dev/null 
+				curler "https://${FIREWALL_ADDRESS}/api/?type=keygen&user=${FACTORY_USERNAME}&password=${ESCAPED_PASS}" "/response/@status" 10 1>/dev/null
 			fi
+			date +"%T Firewall appears to be up"
 			CURRENT_VERSION=$(curler "https://${FIREWALL_ADDRESS}/api/?type=op&cmd=<show><system><info></info></system></show>" "/response/result/system/sw-version" 10) || endbeep
 			checkAutoCom "$FIREWALL_ADDRESS" || endbeep
 			healthChecks || { date +"%T --- ERROR --- Detected process errors on the firewall. Use the -i flag to ignore."; if (( IGNORE_ERRORS == 0 )); then endbeep; fi; }
