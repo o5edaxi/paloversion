@@ -14,6 +14,10 @@ This shell script is primarily intended as a quick and easy way to upgrade Palo 
 * Develop a simple GUI for the Raspberry Pi + Touchscreen (see [paloversion-gui](https://github.com/o5edaxi/paloversion-gui))
 * (Most importantly) work without an Internet connection or an active support license. **This script works by locating, validating, and uploading the firmware from your computer in a fully automated manner.**
 
+### NEW in v1.7
+
+**The tool downloader.py will automatically generate up-to-date csv files as well as download the firmware files to your server, by connecting to firewall or Panorama under active support and using the new "export" function. See the Downloader section below.**
+
 ### NEW in v1.4
 
 **Threat, config, and license support allows the script to fully prepare a firewall or batch of firewalls for production automatically, without user intervention.**
@@ -166,7 +170,55 @@ Line number (ascending, higher=newer),Version (e.g. 7.1.0),Major (e.g. 7.1),Rele
 
 **You can generate up to date versions of the software files by logging into the PA support portal and heading to the Software Updates section. Next, open the browser's developer tools and copy the server response to the POST that the browser makes to "/api/contentupdates/GetContentUpdates" whenever you select a firewall family in the upper menu. Put the JSON text in a file called "input.json" and run the [Python script](json-extractor.py) found in this repo to generate up to date csv files for the corresponding platform.**
 
+**You can also use the downloader.py tool and a firewall or Panorama under active support.**
+
 Place all csv files in the same folder as the script.
+
+### Downloader
+
+Run the downloader.py script to connect to a firewall or Panorama, download the firmwares, and export them to the server the script runs on. CSV files will also automatically be generated, thanks to the information provided by the "request system software upgrade check" command of PanOS.
+
+For export to work correctly, an SCP server profile must be configured on the firewall or Panorama. It is important that the files are moved to the same server the script runs on, so the script can calculate the checksums for the CSV, and also know what firmware is already available to avoid downloading it twice. Running the downloader as a daily cron task can allow you to keep an always up-to-date firmware repository and csv for paloversion.
+
+Running the script with a Panorama instead of a firewall will allow you to download firmware for multiple firewall models at once, but only up to the major that Panorama itself is running.
+
+Usage:
+
+Install pan-os-python:
+
+```
+pip install pan-os-python
+```
+
+Run the script with the firewall/Panorama IP, the name of the SCP server profile, and API key.
+
+```
+usage: downloader.py [-h] [-p SCP_PATH] [-v FIRMWARE_REGEX] device scp_profile api_key
+
+positional arguments:
+  device                Firewall or Panorama IP address or hostname
+  scp_profile           Name of SCP Profile configured on firewall or Panorama
+  api_key               Firewall or Panorama API Key
+
+options:
+  -h, --help            show this help message and exit
+  -p SCP_PATH, --scp-path SCP_PATH
+                        Where to find the firmware files exported from the device, to calculate the checksum. Default:
+                        the script directory
+  -v FIRMWARE_REGEX, --firmware-regex FIRMWARE_REGEX
+                        Regex to limit the script to certain firmware file names. Default: "^PanOS_"
+
+```
+
+For example:
+
+```
+>python3 downloader.py --scp-path '/home/user/paloversion' --firmware-regex '^PanOS_(400|1400)-11\.1\..+' 192.0.2.1 SCP-paloversion-server APIKEY123==
+```
+
+--scp-path is supposed to be the path configured in the SCP Server Profile on the firewall; it will let the script find the files that the firewall has placed on the server.
+
+--firmware-regex allows to download only versions that interest you (e.g. only 11.1 firmware and only for PA-400 and PA-1400). The regex is applied to the default file name, i.e. PanOS_[MODEL]-[VERSION]
 
 ### Batch Mode
 
