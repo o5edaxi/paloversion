@@ -25,17 +25,23 @@ parser.add_argument('-p', '--scp-path', action='store', type=str, default='.',
                     'Default: the script directory')
 parser.add_argument('-v', '--firmware-regex', action='store', type=str, default='^PanOS_',
                     help='Regex to limit the script to certain firmware file names. Default: "^PanOS_"')
+parser.add_argument('-n', '--no-download', action='store_true', help="Only create the csv, without downloading files. "
+                    "When targeting a firewall, this will cause the csv to lack the hashes, as the firewall API doesn't "
+                    'provide them and the only way is to get them from the files. "scp_profile" is not used '
+                    'with this flag. Default: False')
 args = parser.parse_args()
 dvc = Firewall(args.device, api_key=args.api_key)
 platform = dvc.op('show system info').find('.//family').text
-if platform == 'pc':
+if platform == 'pc' or platform == 'm':
     dvc = Panorama(args.device, api_key=args.api_key)
-    pc = True
+    pra = True
     cmd_pra = 'batch'
     print("Device is a Panorama. Only firmware versions up to the Panorama's running major will be available.")
 else:
     print('Device is a firewall.')
-    pc = False
+    if args.no_download:
+        print("Files will not be downloaded, so the csv won't contain the hashes")
+    pra = False
     cmd_pra = 'system'
 response = dvc.op(f'request {cmd_pra} software check')
 releases_dict_list = []
@@ -44,9 +50,12 @@ if not response.findall('.//sw-updates/versions/entry'):
     sys.exit(1)
 for version in response.findall('.//sw-updates/versions/entry'):
     release = {}
-    if pc:
+    if pra:
         release['platform'] = version.find('./platform').text  # FW doesn't give this
         release['sha256Checksum'] = version.find('./sha256').text  # FW doesn't give this either...
+    elif args.no_download:
+        release['platform'] = platform
+        release['sha256Checksum'] = ''
     else:
         release['platform'] = platform
     release['versionNumber'] = version.find('./version').text
@@ -60,10 +69,12 @@ if not releases_dict_list:
 for idx, release in enumerate(releases_dict_list):
     if os.path.isfile(os.path.join(args.scp_path, release['fileName'])):
         print(f"File {release['fileName']} for {release['platform']} already on disk, not downloading")
+    elif args.no_download:
+        pass
     else:
         print(f"Downloading version {release['versionNumber']} for {release['platform']} and placing on SCP server")
         try:
-            if pc:
+            if pra:
                 response = dvc.op(f"request {cmd_pra} software download file \"{release['fileName']}\"")
                 """
                 As it does
@@ -86,7 +97,7 @@ for idx, release in enumerate(releases_dict_list):
               cmd_xml=False)
         print(f"Exported file {release['fileName']} from PA device")
         try:
-            if pc:
+            if pra:
                 dvc.op(f"request batch software delete file \"{release['fileName']}\"")
             else:
                 dvc.op(f"delete software version \"{release['versionNumber']}\"")
@@ -96,7 +107,7 @@ for idx, release in enumerate(releases_dict_list):
                 pass
             else:
                 raise
-    if not pc:
+    if not pra and not args.no_download:
         sha256 = hashlib.sha256()
         with open(os.path.join(args.scp_path, release['fileName']), 'rb') as f:
             while True:
@@ -114,8 +125,15 @@ for plat in platforms:
 
     listoflist = []
     for release in filtered_dict_list:
-        listoflist += [[[], release['versionNumber'], [], [], release['fileName'],
-                        release['sha256Checksum']]]
+        # Don't support earlier than PAN-OS 7.1
+        try:
+            maj = '.'.join(release['versionNumber'].split('.')[0:2])
+            if float(maj) >= 7.1:
+                listoflist += [[[], release['versionNumber'], [], [], release['fileName'],
+                                release['sha256Checksum'].lower()]]
+        except ValueError:
+            listoflist += [[[], release['versionNumber'], [], [], release['fileName'],
+                                release['sha256Checksum'].lower()]]
     split = []
     for sublist in listoflist:
         split += [re.split(r'\.|-', sublist[1], maxsplit=3)]
@@ -161,7 +179,10 @@ for plat in platforms:
     # Don't support earlier than PAN-OS 7.1
 
     for sublist in listoflist:
-        if float(sublist[2]) >= 7.1:
+        try:
+            if float(sublist[2]) >= 7.1:
+                finallist += [sublist]
+        except ValueError:
             finallist += [sublist]
 
     outputName = plat + ".csv"
