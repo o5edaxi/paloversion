@@ -222,7 +222,7 @@ For example:
 
 ### Batch Mode
 
-When used with this option, the script supports a crude autodiscovery functionality. It will ping the all-nodes multicast address and then start the upgrade process for any IP that responds. Terminal window space usage is optimized based on the number of batches running. A MAC OUI filter for Palo Alto Networks is also available to prevent unnecessary traffic in networks that contain other devices. All Palo Alto Networks firewalls generate a EUI-64 link-local IPv6 address by default, which means they are unique and can be used to access the GUI to configure the firewall.
+When used with this option, the script supports a crude autodiscovery functionality. It will ping the all-nodes multicast address and then start the upgrade process for any IP that responds. Terminal window space usage is optimized based on the number of batches running. A MAC OUI filter for Palo Alto Networks is also available to prevent unnecessary traffic in networks that contain other devices (you can update the list of MAC prefixes by editing the OUI_LIST variable at the top of the script). All Palo Alto Networks firewalls generate a EUI-64 link-local IPv6 address by default, which means they are unique and can be used to access the GUI to configure the firewall.
 
 **This mode does not work with WSL as it requires link-local access and layer 2 visibility of the network the firewalls are connected to.**
 
