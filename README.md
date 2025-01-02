@@ -193,7 +193,7 @@ pip install pan-os-python
 Run the script with the firewall/Panorama IP, the name of the SCP server profile, and API key.
 
 ```
-usage: downloader.py [-h] [-p SCP_PATH] [-v FIRMWARE_REGEX] device scp_profile api_key
+usage: downloader.py [-h] [-p SCP_PATH] [-v FIRMWARE_REGEX] [-n] device scp_profile api_key
 
 positional arguments:
   device                Firewall or Panorama IP address or hostname
@@ -207,6 +207,9 @@ options:
                         the script directory
   -v FIRMWARE_REGEX, --firmware-regex FIRMWARE_REGEX
                         Regex to limit the script to certain firmware file names. Default: "^PanOS_"
+  -n, --no-download     Only create the csv, without downloading files. When targeting a firewall, this will cause the
+                        csv to lack the hashes, as the firewall API doesn't provide them and the only way is to get
+                        them from the files. "scp_profile" is not used with this flag. Default: False
 
 ```
 
