@@ -2483,6 +2483,10 @@ if (( BATCH_MODE == 1 )); then
 	if (( SET_PRA_AUTHKEY == 1 )); then EXTRA_OPTS+=("-p $PANORAMA_AUTHKEY "); fi
 	if (( INSTALL_THREATS == 1 )); then EXTRA_OPTS+=("-t $THREAT_FILENAME "); EXTRA_OPTS+=("-a $ANTIVIRUS_FILENAME "); fi
 	
+	# Save the starting passwords (Issue #7)
+	ACTIVE_PASSWORD_START="$ACTIVE_PASSWORD"
+	BACKUP_PASSWORD_START="$BACKUP_PASSWORD"
+	
 	# Bootstrap loop
 	
 	for i in "${PING6_REPLIES[@]}"
@@ -2493,6 +2497,9 @@ if (( BATCH_MODE == 1 )); then
 		FIREWALL_ADDRESS="[${i}]"
 		
 		# Use the keygen function twice to ensure we get password change notifications post 10.2 and try both passwords
+		# Set passwords back to the starting ones after initializing each device (Issue #7)
+		ACTIVE_PASSWORD="$ACTIVE_PASSWORD_START"
+		BACKUP_PASSWORD="$BACKUP_PASSWORD_START"
 		ESCAPED_PASS=""
 		ESCAPED_PASS=$(echo "$ACTIVE_PASSWORD" | sed -r 's/(\{|\}|\[|\])/\\\1/g')
 		curler "https://[${i}]/api/?type=keygen&user=${USERNAME}&password=${ESCAPED_PASS}" "/response/@status" 10 1>/dev/null || curler "https://[${i}]/api/?type=keygen&user=${USERNAME}&password=${ESCAPED_PASS}" "/response/@status" 10 1>/dev/null || endbeep
